@@ -5,6 +5,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import symphony/errors
 
 /// Codex process handle
 pub type CodexProcess {
@@ -42,9 +43,19 @@ pub type CodexEvent {
 }
 
 /// Start a Codex thread by spawning the app-server process
-pub fn start_thread(command: String, cwd: String) -> Result(CodexProcess, String) {
+pub fn start_thread(
+  command: String,
+  cwd: String,
+) -> Result(CodexProcess, errors.AgentError) {
   // For this implementation, we'll use Erlang ports to communicate with the subprocess
   do_start_codex(command, cwd)
+  |> result.map_error(fn(details) {
+    errors.LaunchFailed(
+      command: command,
+      workspace_path: cwd,
+      details: details,
+    )
+  })
 }
 
 /// Start Codex via Erlang FFI
@@ -52,7 +63,7 @@ pub fn start_thread(command: String, cwd: String) -> Result(CodexProcess, String
 fn do_start_codex(command: String, cwd: String) -> Result(CodexProcess, String)
 
 /// Start a turn in the Codex thread
-pub fn start_turn(process: CodexProcess, prompt: String) -> Result(Nil, String) {
+pub fn start_turn(process: CodexProcess, prompt: String) -> Result(Nil, errors.AgentError) {
   let request = JsonRpcMessage(
     jsonrpc: "2.0",
     method: Some("turn.start"),
@@ -66,9 +77,18 @@ pub fn start_turn(process: CodexProcess, prompt: String) -> Result(Nil, String) 
 }
 
 /// Send a JSON-RPC request
-fn send_request(process: CodexProcess, request: JsonRpcRequest) -> Result(Nil, String) {
+fn send_request(
+  process: CodexProcess,
+  request: JsonRpcRequest,
+) -> Result(Nil, errors.AgentError) {
   let json_str = encode_request(request)
   do_send_to_process(process, json_str)
+  |> result.map_error(fn(details) {
+    errors.ProtocolError(
+      event: Some("send_request"),
+      details: details,
+    )
+  })
 }
 
 /// Send data to Codex process via FFI
@@ -95,15 +115,24 @@ fn stream_loop(process: CodexProcess, handler: fn(CodexEvent) -> Nil) -> Nil {
         _ -> stream_loop(process, handler)
       }
     }
-    Error(_) -> Nil
+    Error(error) -> {
+      handler(ProcessError(message: errors.agent_error_message(error)))
+      Nil
+    }
   }
 }
 
 /// Read a single event from the process
-fn read_event(process: CodexProcess) -> Result(CodexEvent, String) {
+fn read_event(process: CodexProcess) -> Result(CodexEvent, errors.AgentError) {
   case do_read_event(process) {
     Ok(event_str) -> parse_event(event_str)
-    Error(e) -> Error(e)
+    Error(details) ->
+      Error(
+        errors.ProtocolError(
+          event: Some("read_event"),
+          details: details,
+        ),
+      )
   }
 }
 
@@ -112,15 +141,25 @@ fn read_event(process: CodexProcess) -> Result(CodexEvent, String) {
 fn do_read_event(process: CodexProcess) -> Result(String, String)
 
 /// Parse a Codex event from JSON
-fn parse_event(json_str: String) -> Result(CodexEvent, String) {
+fn parse_event(json_str: String) -> Result(CodexEvent, errors.AgentError) {
   use dyn <- result.try(
     json.decode(json_str, dynamic.dynamic)
-    |> result.map_error(fn(_) { "Failed to decode event JSON" }),
+    |> result.map_error(fn(_) {
+      errors.ProtocolError(
+        event: Some("parse_event"),
+        details: "Failed to decode event JSON",
+      )
+    }),
   )
 
   use method <- result.try(
     dynamic.field("method", dynamic.optional(dynamic.string))(dyn)
-    |> result.map_error(fn(_) { "Failed to parse event method" }),
+    |> result.map_error(fn(_) {
+      errors.ProtocolError(
+        event: Some("parse_event"),
+        details: "Failed to parse event method",
+      )
+    }),
   )
 
   case method {
@@ -129,25 +168,37 @@ fn parse_event(json_str: String) -> Result(CodexEvent, String) {
     Some("turn.complete") -> parse_turn_complete(dyn)
     Some("thread.started") -> parse_thread_started(dyn)
     Some("thread.complete") -> parse_thread_complete(dyn)
-    Some(_) -> Error("Unknown event method")
-    None -> Error("Event missing method field")
+    Some(value) ->
+      Error(
+        errors.ProtocolError(
+          event: Some("parse_event"),
+          details: "Unknown event method: " <> value,
+        ),
+      )
+    None ->
+      Error(
+        errors.ProtocolError(
+          event: Some("parse_event"),
+          details: "Event missing method field",
+        ),
+      )
   }
 }
 
-fn parse_turn_started(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+fn parse_turn_started(dyn: dynamic.Dynamic) -> Result(CodexEvent, errors.AgentError) {
   use params <- result.try(get_params(dyn))
   use turn_id <- result.try(get_string_field(params, "turn_id"))
   Ok(TurnStarted(turn_id: turn_id))
 }
 
-fn parse_turn_update(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+fn parse_turn_update(dyn: dynamic.Dynamic) -> Result(CodexEvent, errors.AgentError) {
   use params <- result.try(get_params(dyn))
   use turn_id <- result.try(get_string_field(params, "turn_id"))
   use content <- result.try(get_string_field(params, "content"))
   Ok(TurnUpdate(turn_id: turn_id, content: content))
 }
 
-fn parse_turn_complete(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+fn parse_turn_complete(dyn: dynamic.Dynamic) -> Result(CodexEvent, errors.AgentError) {
   use params <- result.try(get_params(dyn))
   use turn_id <- result.try(get_string_field(params, "turn_id"))
   use input_tokens <- result.try(get_int_field(params, "input_tokens"))
@@ -159,38 +210,62 @@ fn parse_turn_complete(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
   ))
 }
 
-fn parse_thread_started(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+fn parse_thread_started(dyn: dynamic.Dynamic) -> Result(CodexEvent, errors.AgentError) {
   use params <- result.try(get_params(dyn))
   use thread_id <- result.try(get_string_field(params, "thread_id"))
   Ok(ThreadStarted(thread_id: thread_id))
 }
 
-fn parse_thread_complete(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+fn parse_thread_complete(dyn: dynamic.Dynamic) -> Result(CodexEvent, errors.AgentError) {
   use params <- result.try(get_params(dyn))
   use thread_id <- result.try(get_string_field(params, "thread_id"))
   Ok(ThreadComplete(thread_id: thread_id))
 }
 
-fn get_params(dyn: dynamic.Dynamic) -> Result(dynamic.Dynamic, String) {
+fn get_params(dyn: dynamic.Dynamic) -> Result(dynamic.Dynamic, errors.AgentError) {
   use opt <- result.try(
     dynamic.field("params", dynamic.optional(dynamic.dynamic))(dyn)
-    |> result.map_error(fn(_) { "Failed to parse params" }),
+    |> result.map_error(fn(_) {
+      errors.ProtocolError(
+        event: Some("parse_params"),
+        details: "Failed to parse params",
+      )
+    }),
   )
 
   case opt {
     Some(p) -> Ok(p)
-    None -> Error("Missing params")
+    None ->
+      Error(
+        errors.ProtocolError(
+          event: Some("parse_params"),
+          details: "Missing params",
+        ),
+      )
   }
 }
 
-fn get_string_field(dyn: dynamic.Dynamic, field: String) -> Result(String, String) {
+fn get_string_field(
+  dyn: dynamic.Dynamic,
+  field: String,
+) -> Result(String, errors.AgentError) {
   dynamic.field(field, dynamic.string)(dyn)
-  |> result.map_error(fn(_) { "Missing " <> field })
+  |> result.map_error(fn(_) {
+    errors.ProtocolError(
+      event: Some("parse_field"),
+      details: "Missing " <> field,
+    )
+  })
 }
 
-fn get_int_field(dyn: dynamic.Dynamic, field: String) -> Result(Int, String) {
+fn get_int_field(dyn: dynamic.Dynamic, field: String) -> Result(Int, errors.AgentError) {
   dynamic.field(field, dynamic.int)(dyn)
-  |> result.map_error(fn(_) { "Missing " <> field })
+  |> result.map_error(fn(_) {
+    errors.ProtocolError(
+      event: Some("parse_field"),
+      details: "Missing " <> field,
+    )
+  })
 }
 
 /// Encode a JSON-RPC request

@@ -101,14 +101,8 @@ fn start_codex_thread(
   workspace_path: String,
 ) -> Result(CodexProcess, errors.RunError) {
   app_server.start_thread(config.codex.command, workspace_path)
-  |> result.map_error(fn(details) {
-    errors.AgentFailure(
-      errors.LaunchFailed(
-        command: config.codex.command,
-        workspace_path: workspace_path,
-        details: details,
-      ),
-    )
+  |> result.map_error(fn(error) {
+    errors.AgentFailure(error)
   })
 }
 
@@ -127,13 +121,8 @@ fn run_turns(
       // Start a turn
       use _ <- result.try(
         app_server.start_turn(codex_process, prompt)
-        |> result.map_error(fn(details) {
-          errors.AgentFailure(
-            errors.ProtocolError(
-              event: option.Some("start_turn"),
-              details: details,
-            ),
-          )
+        |> result.map_error(fn(error) {
+          errors.AgentFailure(error)
         }),
       )
 

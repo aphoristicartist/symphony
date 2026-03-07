@@ -1,3 +1,4 @@
+import gleam/option
 import simplifile
 import symphony/errors
 import symphony/types
@@ -41,7 +42,8 @@ pub fn run_hook(
   script: String,
   cwd: String,
   timeout_ms: Int,
-) -> Result(Nil, String) {
+  hook: errors.WorkspaceHook,
+) -> Result(Nil, errors.WorkspaceError) {
   case script == "" {
     True -> Ok(Nil)
     False -> {
@@ -51,7 +53,15 @@ pub fn run_hook(
 
       case result {
         Ok(_output) -> Ok(Nil)
-        Error(e) -> Error(e)
+        Error(details) ->
+          Error(
+            errors.HookFailed(
+              hook: hook,
+              workspace_path: cwd,
+              details: details,
+              exit_code: option.None,
+            ),
+          )
       }
     }
   }

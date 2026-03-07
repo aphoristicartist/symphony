@@ -114,6 +114,32 @@ pub fn tracker_error_not_found_message_test() {
   )
 }
 
+pub fn workspace_error_hook_message_test() {
+  errors.workspace_error_message(
+    errors.HookFailed(
+      hook: errors.BeforeRun,
+      workspace_path: "/tmp/workspace",
+      details: "script exited non-zero",
+      exit_code: Some(2),
+    ),
+  )
+  |> should.equal(
+    "Workspace hook before_run failed in /tmp/workspace (exit: 2): script exited non-zero",
+  )
+}
+
+pub fn run_error_agent_message_test() {
+  errors.run_error_message(
+    errors.AgentFailure(
+      errors.ProtocolError(
+        event: Some("start_turn"),
+        details: "invalid JSON-RPC payload",
+      ),
+    ),
+  )
+  |> should.equal("Agent protocol error at start_turn: invalid JSON-RPC payload")
+}
+
 // ============================================================================
 // Template Tests
 // ============================================================================

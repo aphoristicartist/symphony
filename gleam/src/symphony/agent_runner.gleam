@@ -1,4 +1,5 @@
 import gleam/erlang/process
+import gleam/option
 import gleam/result
 import symphony/codex/app_server.{type CodexProcess}
 import symphony/config.{type Config}
@@ -9,30 +10,25 @@ import symphony/validation
 import symphony/workspace
 
 /// Run an issue through the agent
-pub fn run_issue(issue: Issue, config: Config, attempt: Int) -> Result(RunAttemptPhase, String) {
+pub fn run_issue(
+  issue: Issue,
+  config: Config,
+  attempt: Int,
+) -> Result(RunAttemptPhase, errors.RunError) {
   // Step 1: Ensure workspace
   use workspace <- result.try(
     ensure_issue_workspace(issue, config)
-    |> result.map_error(fn(_) { "Failed to create workspace" }),
+    |> result.map_error(fn(error) { errors.WorkspaceFailure(error) }),
   )
 
   // Step 2: Run before_run hook if configured
-  use _ <- result.try(
-    run_before_hook(config, workspace.path)
-    |> result.map_error(fn(e) { "before_run hook failed: " <> e }),
-  )
+  use _ <- result.try(run_before_hook(config, workspace.path))
 
   // Step 3: Build prompt from template
-  use prompt <- result.try(
-    build_prompt(issue, config, attempt)
-    |> result.map_error(fn(e) { "Failed to build prompt: " <> e }),
-  )
+  use prompt <- result.try(build_prompt(issue, config, attempt))
 
   // Step 4: Start Codex thread
-  use codex_process <- result.try(
-    start_codex_thread(config, workspace.path)
-    |> result.map_error(fn(e) { "Failed to start Codex: " <> e }),
-  )
+  use codex_process <- result.try(start_codex_thread(config, workspace.path))
 
   // Step 5: Run turns until complete or max turns reached
   let result = run_turns(codex_process, prompt, config, issue, 0)
@@ -56,28 +52,64 @@ fn ensure_issue_workspace(
 }
 
 /// Run before_run hook
-fn run_before_hook(_config: Config, _workspace_path: String) -> Result(Nil, String) {
+fn run_before_hook(config: Config, workspace_path: String) -> Result(Nil, errors.RunError) {
   // For now, no hooks configured
   // In production, this would read from config
-  Ok(Nil)
+  workspace.run_hook(
+    "",
+    workspace_path,
+    config.codex.turn_timeout_ms,
+    errors.BeforeRun,
+  )
+  |> result.map_error(fn(error) { errors.WorkspaceFailure(error) })
 }
 
 /// Run after_run hook
-fn run_after_hook(_config: Config, _workspace_path: String) -> Result(Nil, String) {
+fn run_after_hook(config: Config, workspace_path: String) -> Result(Nil, errors.RunError) {
   // For now, no hooks configured
   // In production, this would read from config
-  Ok(Nil)
+  workspace.run_hook(
+    "",
+    workspace_path,
+    config.codex.turn_timeout_ms,
+    errors.AfterRun,
+  )
+  |> result.map_error(fn(error) { errors.WorkspaceFailure(error) })
 }
 
 /// Build prompt from template
-fn build_prompt(issue: Issue, config: Config, attempt: Int) -> Result(String, String) {
+fn build_prompt(
+  issue: Issue,
+  config: Config,
+  attempt: Int,
+) -> Result(String, errors.RunError) {
   let context = template.context_from_issue(issue, attempt)
   template.render(config.prompt_template, context)
+  |> result.map_error(fn(details) {
+    errors.AgentFailure(
+      errors.ProtocolError(
+        event: option.Some("prompt_template"),
+        details: details,
+      ),
+    )
+  })
 }
 
 /// Start Codex thread
-fn start_codex_thread(config: Config, workspace_path: String) -> Result(CodexProcess, String) {
+fn start_codex_thread(
+  config: Config,
+  workspace_path: String,
+) -> Result(CodexProcess, errors.RunError) {
   app_server.start_thread(config.codex.command, workspace_path)
+  |> result.map_error(fn(details) {
+    errors.AgentFailure(
+      errors.LaunchFailed(
+        command: config.codex.command,
+        workspace_path: workspace_path,
+        details: details,
+      ),
+    )
+  })
 }
 
 /// Run turns until completion or max turns
@@ -87,7 +119,7 @@ fn run_turns(
   config: Config,
   issue: Issue,
   turn_count: Int,
-) -> Result(RunAttemptPhase, String) {
+) -> Result(RunAttemptPhase, errors.RunError) {
   // Check if max turns reached
   case turn_count >= config.agent.max_turns {
     True -> Ok(types.TimedOut)
@@ -95,7 +127,14 @@ fn run_turns(
       // Start a turn
       use _ <- result.try(
         app_server.start_turn(codex_process, prompt)
-        |> result.map_error(fn(e) { "Failed to start turn: " <> e }),
+        |> result.map_error(fn(details) {
+          errors.AgentFailure(
+            errors.ProtocolError(
+              event: option.Some("start_turn"),
+              details: details,
+            ),
+          )
+        }),
       )
 
       // Stream events and track completion
@@ -110,7 +149,7 @@ fn stream_turn_events(
   config: Config,
   issue: Issue,
   turn_count: Int,
-) -> Result(RunAttemptPhase, String) {
+) -> Result(RunAttemptPhase, errors.RunError) {
   let result = process.new_subject()
 
   app_server.stream_events(codex_process, fn(event) {
@@ -132,7 +171,17 @@ fn stream_turn_events(
         let _ = process.send(result, Ok(types.Succeeded))
       }
       app_server.ProcessError(message) -> {
-        let _ = process.send(result, Error(message))
+        let _ = process.send(
+          result,
+          Error(
+            errors.AgentFailure(
+              errors.ProtocolError(
+                event: option.Some("process_event"),
+                details: message,
+              ),
+            ),
+          ),
+        )
       }
       _ -> Nil
     }

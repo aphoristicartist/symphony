@@ -152,3 +152,122 @@ pub fn tracker_error_message(error: TrackerError) -> String {
     }
   }
 }
+
+/// Deterministic human-readable message for workspace failures.
+pub fn workspace_error_message(error: WorkspaceError) -> String {
+  case error {
+    CreationFailed(path, workspace_key, details) ->
+      "Workspace creation failed for "
+      <> workspace_key
+      <> " at "
+      <> path
+      <> ": "
+      <> details
+    HookFailed(hook, workspace_path, details, exit_code) -> {
+      let code_text = case exit_code {
+        Some(code) -> int.to_string(code)
+        None -> "unknown"
+      }
+
+      "Workspace hook "
+      <> workspace_hook_name(hook)
+      <> " failed in "
+      <> workspace_path
+      <> " (exit: "
+      <> code_text
+      <> "): "
+      <> details
+    }
+    CleanupFailed(path, workspace_key, details) ->
+      "Workspace cleanup failed for "
+      <> workspace_key
+      <> " at "
+      <> path
+      <> ": "
+      <> details
+  }
+}
+
+/// Deterministic human-readable message for agent failures.
+pub fn agent_error_message(error: AgentError) -> String {
+  case error {
+    LaunchFailed(command, workspace_path, details) ->
+      "Agent launch failed for command `"
+      <> command
+      <> "` in "
+      <> workspace_path
+      <> ": "
+      <> details
+    Timeout(operation, timeout_ms, details) ->
+      "Agent timeout during "
+      <> operation
+      <> " after "
+      <> int.to_string(timeout_ms)
+      <> "ms: "
+      <> details
+    ProtocolError(event, details) -> {
+      case event {
+        Some(event_name) -> "Agent protocol error at " <> event_name <> ": " <> details
+        None -> "Agent protocol error: " <> details
+      }
+    }
+  }
+}
+
+/// Deterministic human-readable message for orchestration failures.
+pub fn orchestration_error_message(error: OrchestrationError) -> String {
+  case error {
+    DispatchFailed(issue_id, issue_identifier, attempt, details) -> {
+      let identifier_text = case issue_identifier {
+        Some(value) -> value
+        None -> "unknown"
+      }
+      let attempt_text = case attempt {
+        Some(value) -> int.to_string(value)
+        None -> "unknown"
+      }
+
+      "Dispatch failed for issue "
+      <> issue_id
+      <> " (identifier: "
+      <> identifier_text
+      <> ", attempt: "
+      <> attempt_text
+      <> "): "
+      <> details
+    }
+    ReconciliationFailed(issue_id, operation, details) -> {
+      let issue_text = case issue_id {
+        Some(value) -> value
+        None -> "unknown"
+      }
+
+      "Reconciliation failed for issue "
+      <> issue_text
+      <> " during "
+      <> operation
+      <> ": "
+      <> details
+    }
+  }
+}
+
+/// Deterministic human-readable message for runtime failures.
+pub fn run_error_message(error: RunError) -> String {
+  case error {
+    ConfigFailure(error) -> config_error_message(error)
+    WorkspaceFailure(error) -> workspace_error_message(error)
+    TrackerFailure(error) -> tracker_error_message(error)
+    AgentFailure(error) -> agent_error_message(error)
+    OrchestrationFailure(error) -> orchestration_error_message(error)
+  }
+}
+
+fn workspace_hook_name(hook: WorkspaceHook) -> String {
+  case hook {
+    AfterCreate -> "after_create"
+    BeforeRun -> "before_run"
+    AfterRun -> "after_run"
+    BeforeRemove -> "before_remove"
+  }
+}

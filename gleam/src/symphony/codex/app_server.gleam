@@ -55,12 +55,7 @@ pub type CodexEvent {
 /// Start a Codex thread by spawning the app-server process
 pub fn start_thread(command: String, cwd: String) -> Result(CodexProcess, String) {
   // For this implementation, we'll use Erlang ports to communicate with the subprocess
-  let result = do_start_codex(command, cwd)
-  
-  case result {
-    Ok(process) -> Ok(process)
-    Error(e) -> Error("Failed to start Codex: " <> e)
-  }
+  do_start_codex(command, cwd)
 }
 
 /// Start Codex via Erlang FFI

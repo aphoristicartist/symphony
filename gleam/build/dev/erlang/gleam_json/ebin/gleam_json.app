@@ -3,7 +3,6 @@
     {applications, [gleam_stdlib,
                     thoas]},
     {description, "Work with JSON in Gleam"},
-    {modules, [gleam@json,
-               gleam_json_ffi]},
+    {modules, []},
     {registered, []}
 ]}.

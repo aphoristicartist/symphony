@@ -1,0 +1,1 @@
+-record(workspace_config, {root :: binary()}).

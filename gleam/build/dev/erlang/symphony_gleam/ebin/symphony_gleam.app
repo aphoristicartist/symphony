@@ -12,7 +12,6 @@
                     logging,
                     simplifile]},
     {description, "Gleam implementation of the Symphony orchestrator for coding agents"},
-    {modules, [symphony@types,
-               symphony_gleam@@main]},
+    {modules, [symphony@config]},
     {registered, []}
 ]}.

@@ -3,7 +3,6 @@
     {applications, [filepath,
                     gleam_stdlib]},
     {description, "Basic file operations that work on all targets"},
-    {modules, [simplifile,
-               simplifile_erl]},
+    {modules, []},
     {registered, []}
 ]}.

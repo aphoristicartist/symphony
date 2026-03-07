@@ -1,0 +1,1 @@
+-record(codex_config, {command :: binary(), turn_timeout_ms :: integer()}).

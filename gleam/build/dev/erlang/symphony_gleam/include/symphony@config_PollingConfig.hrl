@@ -1,0 +1,1 @@
+-record(polling_config, {interval_ms :: integer()}).

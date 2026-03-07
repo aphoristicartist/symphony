@@ -1,6 +1,7 @@
 import gleam/option.{None, Some}
 import gleeunit
 import gleeunit/should
+import symphony/errors
 import symphony/template
 import symphony/types
 import symphony/validation
@@ -69,6 +70,22 @@ pub fn validation_normalize_state_test() {
 pub fn validation_compose_session_id_test() {
   validation.compose_session_id("thread-1", "turn-2")
   |> should.equal(Ok("thread-1-turn-2"))
+}
+
+pub fn config_error_missing_file_message_test() {
+  errors.config_error_message(errors.MissingFile(path: "/tmp/WORKFLOW.md"))
+  |> should.equal("Configuration file not found: /tmp/WORKFLOW.md")
+}
+
+pub fn config_error_validation_message_test() {
+  errors.config_error_message(
+    errors.ValidationFailed(
+      error: errors.MissingRequiredField(field: "tracker.api_key"),
+    ),
+  )
+  |> should.equal(
+    "Configuration validation failed: Missing required field: tracker.api_key",
+  )
 }
 
 // ============================================================================

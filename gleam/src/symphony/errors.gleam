@@ -1,3 +1,4 @@
+import gleam/int
 import gleam/option.{type Option}
 
 /// Validation failures for typed config checks.
@@ -74,4 +75,33 @@ pub type RunError {
   TrackerFailure(TrackerError)
   AgentFailure(AgentError)
   OrchestrationFailure(OrchestrationError)
+}
+
+/// Deterministic human-readable message for validation failures.
+pub fn validation_error_message(error: ValidationError) -> String {
+  case error {
+    MissingRequiredField(field) -> "Missing required field: " <> field
+    UnsupportedValue(field, value) ->
+      "Unsupported value for " <> field <> ": " <> value
+    EmptyStateList(field) -> "State list must not be empty: " <> field
+    OverlappingState(state) ->
+      "State cannot be both active and terminal: " <> state
+    NonPositiveValue(field, value) ->
+      "Expected positive value for " <> field <> ", got: "
+      <> int.to_string(value)
+    InvalidIssueIdentifier(identifier) ->
+      "Invalid issue identifier: " <> identifier
+    InvalidSessionComponent(component, value) ->
+      "Invalid session component " <> component <> ": " <> value
+  }
+}
+
+/// Deterministic human-readable message for config failures.
+pub fn config_error_message(error: ConfigError) -> String {
+  case error {
+    MissingFile(path) -> "Configuration file not found: " <> path
+    ParseError(details) -> "Configuration parse error: " <> details
+    ValidationFailed(error) ->
+      "Configuration validation failed: " <> validation_error_message(error)
+  }
 }

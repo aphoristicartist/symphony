@@ -6,6 +6,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import simplifile
+import symphony/errors
 
 /// Configuration for the issue tracker (Linear)
 pub type TrackerConfig {
@@ -57,15 +58,23 @@ pub type Config {
 }
 
 /// Load configuration from a WORKFLOW.md file
-pub fn load(path: String) -> Result(Config, String) {
+pub fn load(path: String) -> Result(Config, errors.ConfigError) {
   use content <- result.try(
     simplifile.read(path)
-    |> result.map_error(fn(_) { "Failed to read " <> path }),
+    |> result.map_error(fn(_) { errors.MissingFile(path: path) }),
   )
 
-  use config_dict <- result.try(parse_yaml_front_matter(content))
+  use config_dict <- result.try(
+    parse_yaml_front_matter(content)
+    |> result.map_error(fn(e) { errors.ParseError(details: e) }),
+  )
 
-  build_config(config_dict)
+  use config <- result.try(
+    build_config(config_dict)
+    |> result.map_error(fn(e) { errors.ParseError(details: e) }),
+  )
+
+  Ok(config)
 }
 
 /// Parse YAML front matter from WORKFLOW.md content

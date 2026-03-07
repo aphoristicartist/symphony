@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import gleam/io
 import symphony/config
+import symphony/errors
 import symphony/orchestrator
 
 /// Main entry point for the Symphony orchestrator
@@ -31,7 +32,7 @@ pub fn main() {
           }
         }
         Error(e) -> {
-          io.println("Failed to load configuration: " <> e)
+          io.println("Failed to load configuration: " <> errors.config_error_message(e))
           process.sleep(1000)
         }
       }

@@ -1,12 +1,10 @@
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 
 /// Codex process handle
 pub type CodexProcess {
@@ -21,10 +19,6 @@ pub type CodexProcess {
 type JsonRpcRequest =
   JsonRpcMessage(Dynamic)
 
-/// JSON-RPC response
-type JsonRpcResponse =
-  JsonRpcMessage(Dynamic)
-
 /// JSON-RPC message
 type JsonRpcMessage(a) {
   JsonRpcMessage(
@@ -33,13 +27,8 @@ type JsonRpcMessage(a) {
     params: Option(a),
     id: Option(Int),
     result: Option(a),
-    error: Option(JsonRpcError),
+    error: Option(Dynamic),
   )
-}
-
-/// JSON-RPC error
-type JsonRpcError {
-  JsonRpcError(code: Int, message: String, data: Option(Dynamic))
 }
 
 /// Codex event types
@@ -72,7 +61,7 @@ pub fn start_turn(process: CodexProcess, prompt: String) -> Result(Nil, String) 
     result: None,
     error: None,
   )
-  
+
   send_request(process, request)
 }
 
@@ -187,7 +176,7 @@ fn get_params(dyn: dynamic.Dynamic) -> Result(dynamic.Dynamic, String) {
     dynamic.field("params", dynamic.optional(dynamic.dynamic))(dyn)
     |> result.map_error(fn(_) { "Failed to parse params" }),
   )
-  
+
   case opt {
     Some(p) -> Ok(p)
     None -> Error("Missing params")
@@ -209,24 +198,24 @@ fn encode_request(request: JsonRpcRequest) -> String {
   let base_fields = [
     #("jsonrpc", json.string(request.jsonrpc)),
   ]
-  
+
   let method_fields = case request.method {
     Some(method) -> [#("method", json.string(method))]
     None -> []
   }
-  
+
   let params_fields = case request.params {
     Some(params) -> [#("params", dynamic_to_json(params))]
     None -> []
   }
-  
+
   let id_fields = case request.id {
     Some(id) -> [#("id", json.int(id))]
     None -> []
   }
-  
+
   let all_fields = list.concat([base_fields, method_fields, params_fields, id_fields])
-  
+
   json.object(all_fields) |> json.to_string
 }
 

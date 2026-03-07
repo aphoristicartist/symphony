@@ -1,25 +1,24 @@
 import gleam/erlang/process
-import gleam/int
-import gleam/list
-import gleam/option
 import gleam/result
-import symphony/codex/app_server.{type CodexEvent, type CodexProcess}
+import symphony/codex/app_server.{type CodexProcess}
 import symphony/config.{type Config}
+import symphony/errors
 import symphony/template
 import symphony/types.{type Issue, type RunAttemptPhase}
+import symphony/validation
 import symphony/workspace
 
 /// Run an issue through the agent
 pub fn run_issue(issue: Issue, config: Config, attempt: Int) -> Result(RunAttemptPhase, String) {
   // Step 1: Ensure workspace
-  use workspace_path <- result.try(
+  use workspace <- result.try(
     ensure_issue_workspace(issue, config)
     |> result.map_error(fn(_) { "Failed to create workspace" }),
   )
 
   // Step 2: Run before_run hook if configured
   use _ <- result.try(
-    run_before_hook(config, workspace_path)
+    run_before_hook(config, workspace.path)
     |> result.map_error(fn(e) { "before_run hook failed: " <> e }),
   )
 
@@ -31,7 +30,7 @@ pub fn run_issue(issue: Issue, config: Config, attempt: Int) -> Result(RunAttemp
 
   // Step 4: Start Codex thread
   use codex_process <- result.try(
-    start_codex_thread(config, workspace_path)
+    start_codex_thread(config, workspace.path)
     |> result.map_error(fn(e) { "Failed to start Codex: " <> e }),
   )
 
@@ -39,7 +38,7 @@ pub fn run_issue(issue: Issue, config: Config, attempt: Int) -> Result(RunAttemp
   let result = run_turns(codex_process, prompt, config, issue, 0)
 
   // Step 6: Run after_run hook
-  let _ = run_after_hook(config, workspace_path)
+  let _ = run_after_hook(config, workspace.path)
 
   // Step 7: Stop Codex process
   app_server.stop_thread(codex_process)
@@ -48,20 +47,23 @@ pub fn run_issue(issue: Issue, config: Config, attempt: Int) -> Result(RunAttemp
 }
 
 /// Ensure workspace exists for an issue
-fn ensure_issue_workspace(issue: Issue, config: Config) -> Result(String, Nil) {
+fn ensure_issue_workspace(
+  issue: Issue,
+  config: Config,
+) -> Result(types.Workspace, errors.WorkspaceError) {
   let key = workspace.workspace_key(issue.identifier)
   workspace.ensure_workspace(config.workspace.root, key)
 }
 
 /// Run before_run hook
-fn run_before_hook(config: Config, workspace_path: String) -> Result(Nil, String) {
+fn run_before_hook(_config: Config, _workspace_path: String) -> Result(Nil, String) {
   // For now, no hooks configured
   // In production, this would read from config
   Ok(Nil)
 }
 
 /// Run after_run hook
-fn run_after_hook(config: Config, workspace_path: String) -> Result(Nil, String) {
+fn run_after_hook(_config: Config, _workspace_path: String) -> Result(Nil, String) {
   // For now, no hooks configured
   // In production, this would read from config
   Ok(Nil)
@@ -116,16 +118,13 @@ fn stream_turn_events(
       app_server.TurnComplete(..) -> {
         // Check if issue is still in active state
         case check_issue_state(issue, config) {
-          Ok(True) -> {
+          True -> {
             // Issue still active, continue with next turn
             let _ = process.send(result, Ok(types.StreamingTurn))
           }
-          Ok(False) -> {
+          False -> {
             // Issue completed, we're done
             let _ = process.send(result, Ok(types.Succeeded))
-          }
-          Error(e) -> {
-            let _ = process.send(result, Error(e))
           }
         }
       }
@@ -155,10 +154,8 @@ fn stream_turn_events(
 }
 
 /// Check if issue is still in an active state
-fn check_issue_state(issue: Issue, config: Config) -> Result(Bool, String) {
-  // For now, assume issue is still active
-  // In production, this would query Linear to check current state
-  Ok(list.contains(config.tracker.active_states, issue.state))
+fn check_issue_state(issue: Issue, config: Config) -> Bool {
+  validation.is_active_state(issue.state, config)
 }
 
 /// Get the current phase

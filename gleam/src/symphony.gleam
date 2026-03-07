@@ -1,6 +1,5 @@
 import gleam/erlang/process
 import gleam/io
-import gleam/result
 import symphony/config
 import symphony/orchestrator
 

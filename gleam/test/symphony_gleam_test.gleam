@@ -3,6 +3,7 @@ import gleeunit
 import gleeunit/should
 import symphony/template
 import symphony/types
+import symphony/validation
 import symphony/workspace
 
 pub fn main() {
@@ -41,6 +42,33 @@ pub fn workspace_key_preserves_dashes_test() {
 pub fn workspace_key_preserves_dots_test() {
   workspace.workspace_key("v1.2.3")
   |> should.equal("v1.2.3")
+}
+
+// ============================================================================
+// Validation Tests
+// ============================================================================
+
+pub fn validation_sanitize_workspace_key_test() {
+  validation.sanitize_workspace_key("test issue #123!")
+  |> should.equal("test_issue__123_")
+}
+
+pub fn validation_issue_identifier_test() {
+  validation.is_valid_issue_identifier("ABC-123")
+  |> should.equal(True)
+
+  validation.is_valid_issue_identifier("bad identifier")
+  |> should.equal(False)
+}
+
+pub fn validation_normalize_state_test() {
+  validation.normalize_state("  In Progress  ")
+  |> should.equal("in progress")
+}
+
+pub fn validation_compose_session_id_test() {
+  validation.compose_session_id("thread-1", "turn-2")
+  |> should.equal(Ok("thread-1-turn-2"))
 }
 
 // ============================================================================

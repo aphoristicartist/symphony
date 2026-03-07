@@ -1,4 +1,3 @@
-import gleam/dict
 import gleam/dynamic
 import gleam/http
 import gleam/http/request.{type Request}
@@ -6,10 +5,8 @@ import gleam/http/response.{type Response}
 import gleam/httpc
 import gleam/int
 import gleam/json
-import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option
 import gleam/result
-import gleam/string
 import symphony/config.{type Config}
 import symphony/types.{type BlockerRef, type Issue, BlockerRef, Issue}
 

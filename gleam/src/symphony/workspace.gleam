@@ -1,45 +1,38 @@
-import gleam/dict
-import gleam/list
-import gleam/string
 import simplifile
+import symphony/errors
+import symphony/types
+import symphony/validation
 
 /// Generate a workspace key from an issue identifier
 /// Sanitizes to [A-Za-z0-9._-]
 pub fn workspace_key(identifier: String) -> String {
-  identifier
-  |> string.to_graphemes
-  |> list.map(sanitize_char)
-  |> string.concat
-}
-
-/// Sanitize a single character for workspace key
-fn sanitize_char(grapheme: String) -> String {
-  case is_safe_char(grapheme) {
-    True -> grapheme
-    False -> "_"
-  }
-}
-
-/// Check if a character is safe for workspace key
-fn is_safe_char(grapheme: String) -> Bool {
-  let safe_chars = [
-    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o",
-    "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "A", "B", "C", "D",
-    "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
-    "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7",
-    "8", "9", ".", "_", "-",
-  ]
-  list.contains(safe_chars, grapheme)
+  validation.sanitize_workspace_key(identifier)
 }
 
 /// Ensure a workspace directory exists
-/// Returns the full path to the workspace
-pub fn ensure_workspace(root: String, key: String) -> Result(String, Nil) {
+/// Returns typed workspace metadata including creation status.
+pub fn ensure_workspace(
+  root: String,
+  key: String,
+) -> Result(types.Workspace, errors.WorkspaceError) {
   let path = root <> "/" <> key
+  let created_now = case simplifile.verify_is_directory(path) {
+    Ok(True) -> False
+    _ -> True
+  }
 
   case simplifile.create_directory_all(path) {
-    Ok(_) -> Ok(path)
-    Error(_) -> Error(Nil)
+    Ok(_) ->
+      Ok(types.Workspace(path: path, workspace_key: key, created_now: created_now))
+
+    Error(_) ->
+      Error(
+        errors.CreationFailed(
+          path: path,
+          workspace_key: key,
+          details: "failed to create workspace directory",
+        ),
+      )
   }
 }
 
@@ -55,7 +48,7 @@ pub fn run_hook(
       // Execute the script using Erlang :os.cmd
       let cmd = "cd " <> cwd <> " && " <> script <> " 2>&1"
       let result = run_command(cmd, timeout_ms)
-      
+
       case result {
         Ok(_output) -> Ok(Nil)
         Error(e) -> Error(e)
@@ -65,7 +58,7 @@ pub fn run_hook(
 }
 
 /// Run a command with timeout using Erlang FFI
-fn run_command(cmd: String, timeout_ms: Int) -> Result(String, String) {
+fn run_command(cmd: String, _timeout_ms: Int) -> Result(String, String) {
   // For now, use a simple synchronous execution
   // In production, this would use proper timeout handling
   do_run_command(cmd)

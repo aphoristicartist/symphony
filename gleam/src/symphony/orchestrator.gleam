@@ -1,15 +1,15 @@
-import gleam/dict.{type Dict}
+import gleam/dict
 import gleam/erlang/process.{type Subject}
-import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/otp/actor
 import gleam/result
-import gleam/set.{type Set}
+import gleam/set
 import symphony/agent_runner
 import symphony/config.{type Config}
 import symphony/linear/client
 import symphony/types
+import symphony/validation
 
 /// Orchestrator message types
 pub type OrchestratorMessage {
@@ -34,6 +34,13 @@ pub fn start(config: Config) -> Result(Subject(OrchestratorMessage), String) {
     claimed: set.new(),
     retry_attempts: dict.new(),
     completed: set.new(),
+    codex_totals: types.CodexTotals(
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      seconds_running: 0.0,
+    ),
+    codex_rate_limits: None,
   )
 
   actor.start_spec(actor.Spec(
@@ -63,20 +70,28 @@ fn handle_tick(
   // Step 1: Reconcile - check if running issues are still active
   let reconciled_state = reconcile_running_issues(state, config)
 
-  // Step 2: Fetch candidate issues from Linear
-  case client.fetch_active_issues(config) {
-    Ok(issues) -> {
-      // Step 3: Filter out claimed/running
-      let candidates = filter_candidates(issues, reconciled_state)
+  // Step 2: Validate dispatch config and then fetch candidates.
+  case validation.validate_config(config) {
+    Ok(_) -> {
+      case client.fetch_active_issues(config) {
+        Ok(issues) -> {
+          // Step 3: Filter out claimed/running
+          let candidates = filter_candidates(issues, reconciled_state)
 
-      // Step 4: Dispatch up to max_concurrent_agents
-      let new_state = dispatch_issues(candidates, reconciled_state, config)
+          // Step 4: Dispatch up to max_concurrent_agents
+          let new_state = dispatch_issues(candidates, reconciled_state, config)
 
-      actor.Continue(new_state, None)
+          actor.Continue(new_state, None)
+        }
+        Error(_) -> {
+          // Log error and continue
+          actor.Continue(reconciled_state, None)
+        }
+      }
     }
     Error(_) -> {
-      // Log error and continue
-      actor.Continue(state, None)
+      // Invalid config: skip dispatch for this tick but keep reconciled state.
+      actor.Continue(reconciled_state, None)
     }
   }
 }
@@ -93,7 +108,7 @@ fn reconcile_running_issues(
     let #(issue_id, _session) = entry
     case client.fetch_issue_state(config, issue_id) {
       Ok(state_name) -> {
-        case list.contains(config.tracker.active_states, state_name) {
+        case validation.is_active_state(state_name, config) {
           True -> acc
           False -> {
             // Issue is no longer active, mark as completed
@@ -104,6 +119,8 @@ fn reconcile_running_issues(
               claimed: acc.claimed,
               retry_attempts: acc.retry_attempts,
               completed: set.insert(acc.completed, issue_id),
+              codex_totals: acc.codex_totals,
+              codex_rate_limits: acc.codex_rate_limits,
             )
           }
         }
@@ -155,6 +172,8 @@ fn dispatch_single_issue(
     claimed: set.insert(state.claimed, issue.id),
     retry_attempts: state.retry_attempts,
     completed: state.completed,
+    codex_totals: state.codex_totals,
+    codex_rate_limits: state.codex_rate_limits,
   )
 
   // Spawn worker process
@@ -186,6 +205,8 @@ fn handle_worker_completed(
         claimed: state.claimed,
         retry_attempts: state.retry_attempts,
         completed: set.insert(state.completed, issue_id),
+        codex_totals: state.codex_totals,
+        codex_rate_limits: state.codex_rate_limits,
       )
       actor.Continue(new_state, None)
     }
@@ -198,6 +219,8 @@ fn handle_worker_completed(
         claimed: state.claimed,
         retry_attempts: state.retry_attempts,
         completed: state.completed,
+        codex_totals: state.codex_totals,
+        codex_rate_limits: state.codex_rate_limits,
       )
       actor.Continue(new_state, None)
     }
@@ -210,6 +233,8 @@ fn handle_worker_completed(
         claimed: state.claimed,
         retry_attempts: state.retry_attempts,
         completed: state.completed,
+        codex_totals: state.codex_totals,
+        codex_rate_limits: state.codex_rate_limits,
       )
       actor.Continue(new_state, None)
     }
@@ -234,6 +259,8 @@ fn handle_retry(
         claimed: state.claimed,
         retry_attempts: dict.delete(state.retry_attempts, retry_entry.issue_id),
         completed: state.completed,
+        codex_totals: state.codex_totals,
+        codex_rate_limits: state.codex_rate_limits,
       )
       actor.Continue(new_state, None)
     }

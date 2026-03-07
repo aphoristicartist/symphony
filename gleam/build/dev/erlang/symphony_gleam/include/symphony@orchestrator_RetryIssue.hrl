@@ -1,0 +1,1 @@
+-record(retry_issue, {retry_entry :: symphony@types:retry_entry()}).

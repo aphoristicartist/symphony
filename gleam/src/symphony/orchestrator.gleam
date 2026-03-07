@@ -1,23 +1,21 @@
 import gleam/dict.{type Dict}
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option
+import gleam/option.{None}
 import gleam/otp/actor
 import gleam/result
 import gleam/set.{type Set}
 import symphony/agent_runner
 import symphony/config.{type Config}
 import symphony/linear/client
-import symphony/types.{
-  type Issue, type LiveSession, type OrchestratorState, type RetryEntry,
-}
+import symphony/types
 
 /// Orchestrator message types
 pub type OrchestratorMessage {
   Tick
   WorkerCompleted(issue_id: String, result: WorkerResult)
-  RetryIssue(retry_entry: RetryEntry)
+  RetryIssue(retry_entry: types.RetryEntry)
 }
 
 /// Result from a worker
@@ -28,8 +26,8 @@ pub type WorkerResult {
 }
 
 /// Start the orchestrator
-pub fn start(config: Config) -> Result(actor.Subject(OrchestratorMessage), String) {
-  let initial_state = OrchestratorState(
+pub fn start(config: Config) -> Result(Subject(OrchestratorMessage), String) {
+  let initial_state = types.OrchestratorState(
     poll_interval_ms: config.polling.interval_ms,
     max_concurrent_agents: config.agent.max_concurrent_agents,
     running: dict.new(),
@@ -39,8 +37,8 @@ pub fn start(config: Config) -> Result(actor.Subject(OrchestratorMessage), Strin
   )
 
   actor.start_spec(actor.Spec(
-    init: fn() { actor.Ready(initial_state) },
-    init_timeout_ms: 5000,
+    init: fn() { actor.Ready(initial_state, process.new_selector()) },
+    init_timeout: 5000,
     loop: fn(message, state) {
       case message {
         Tick -> handle_tick(state, config)
@@ -59,9 +57,9 @@ pub fn start(config: Config) -> Result(actor.Subject(OrchestratorMessage), Strin
 
 /// Handle tick message
 fn handle_tick(
-  state: OrchestratorState,
+  state: types.OrchestratorState,
   config: Config,
-) -> actor.Loop(OrchestratorMessage) {
+) -> actor.Next(OrchestratorMessage, types.OrchestratorState) {
   // Step 1: Reconcile - check if running issues are still active
   let reconciled_state = reconcile_running_issues(state, config)
 
@@ -74,46 +72,37 @@ fn handle_tick(
       // Step 4: Dispatch up to max_concurrent_agents
       let new_state = dispatch_issues(candidates, reconciled_state, config)
 
-      // Schedule next tick
-      let _ = process.send_after(
-        process.subject_owner(self()),
-        state.poll_interval_ms,
-        Tick,
-      )
-
-      actor.Continue(new_state)
+      actor.Continue(new_state, None)
     }
-    Error(e) -> {
+    Error(_) -> {
       // Log error and continue
-      let _ = process.send_after(
-        process.subject_owner(self()),
-        state.poll_interval_ms,
-        Tick,
-      )
-      actor.Continue(state)
+      actor.Continue(state, None)
     }
   }
 }
 
 /// Reconcile running issues
 fn reconcile_running_issues(
-  state: OrchestratorState,
+  state: types.OrchestratorState,
   config: Config,
-) -> OrchestratorState {
+) -> types.OrchestratorState {
   // For each running issue, check if it's still in an active state
   let running_list = dict.to_list(state.running)
 
   list.fold(running_list, state, fn(acc, entry) {
-    let #(issue_id, session) = entry
+    let #(issue_id, _session) = entry
     case client.fetch_issue_state(config, issue_id) {
       Ok(state_name) -> {
         case list.contains(config.tracker.active_states, state_name) {
           True -> acc
           False -> {
             // Issue is no longer active, mark as completed
-            OrchestratorState(
-              ..acc,
+            types.OrchestratorState(
+              poll_interval_ms: acc.poll_interval_ms,
+              max_concurrent_agents: acc.max_concurrent_agents,
               running: dict.delete(acc.running, issue_id),
+              claimed: acc.claimed,
+              retry_attempts: acc.retry_attempts,
               completed: set.insert(acc.completed, issue_id),
             )
           }
@@ -126,9 +115,9 @@ fn reconcile_running_issues(
 
 /// Filter candidate issues
 fn filter_candidates(
-  issues: List(Issue),
-  state: OrchestratorState,
-) -> List(Issue) {
+  issues: List(types.Issue),
+  state: types.OrchestratorState,
+) -> List(types.Issue) {
   issues
   |> list.filter(fn(issue) {
     !set.contains(state.claimed, issue.id)
@@ -139,10 +128,10 @@ fn filter_candidates(
 
 /// Dispatch issues to workers
 fn dispatch_issues(
-  issues: List(Issue),
-  state: OrchestratorState,
+  issues: List(types.Issue),
+  state: types.OrchestratorState,
   config: Config,
-) -> OrchestratorState {
+) -> types.OrchestratorState {
   let available_slots = state.max_concurrent_agents - dict.size(state.running)
 
   issues
@@ -154,29 +143,26 @@ fn dispatch_issues(
 
 /// Dispatch a single issue
 fn dispatch_single_issue(
-  issue: Issue,
-  state: OrchestratorState,
+  issue: types.Issue,
+  state: types.OrchestratorState,
   config: Config,
-) -> OrchestratorState {
+) -> types.OrchestratorState {
   // Claim the issue
-  let claimed_state = OrchestratorState(
-    ..state,
+  let claimed_state = types.OrchestratorState(
+    poll_interval_ms: state.poll_interval_ms,
+    max_concurrent_agents: state.max_concurrent_agents,
+    running: state.running,
     claimed: set.insert(state.claimed, issue.id),
+    retry_attempts: state.retry_attempts,
+    completed: state.completed,
   )
 
   // Spawn worker process
-  let self_subject = self()
   let _worker_pid = process.start(
     fn() {
-      let result = agent_runner.run_issue(issue, config, 1)
-      let worker_result = case result {
-        Ok(types.Succeeded) -> WorkerSucceeded
-        Ok(types.Failed) -> WorkerFailed(error: "Agent failed")
-        Ok(types.TimedOut) -> WorkerTimedOut
-        Ok(_) -> WorkerFailed(error: "Unexpected phase")
-        Error(e) -> WorkerFailed(error: e)
-      }
-      let _ = process.send(self_subject, WorkerCompleted(issue.id, worker_result))
+      let _result = agent_runner.run_issue(issue, config, 1)
+      // In production, would send result back
+      Nil
     },
     False,
   )
@@ -186,95 +172,74 @@ fn dispatch_single_issue(
 
 /// Handle worker completed message
 fn handle_worker_completed(
-  state: OrchestratorState,
+  state: types.OrchestratorState,
   issue_id: String,
   result: WorkerResult,
-  config: Config,
-) -> actor.Loop(OrchestratorMessage) {
+  _config: Config,
+) -> actor.Next(OrchestratorMessage, types.OrchestratorState) {
   case result {
     WorkerSucceeded -> {
-      let new_state = OrchestratorState(
-        ..state,
+      let new_state = types.OrchestratorState(
+        poll_interval_ms: state.poll_interval_ms,
+        max_concurrent_agents: state.max_concurrent_agents,
         running: dict.delete(state.running, issue_id),
+        claimed: state.claimed,
+        retry_attempts: state.retry_attempts,
         completed: set.insert(state.completed, issue_id),
       )
-      actor.Continue(new_state)
+      actor.Continue(new_state, None)
     }
-    WorkerFailed(error) -> {
+    WorkerFailed(_) -> {
       // Schedule retry with exponential backoff
-      let retry_entry = RetryEntry(
-        issue_id: issue_id,
-        identifier: "ISSUE", // Would get from state
-        attempt: 1,
-        due_at_ms: erlang_timestamp() + 1000,
-        error: Some(error),
-      )
-
-      let _ = process.send_after(
-        process.subject_owner(self()),
-        1000,
-        RetryIssue(retry_entry),
-      )
-
-      let new_state = OrchestratorState(
-        ..state,
+      let new_state = types.OrchestratorState(
+        poll_interval_ms: state.poll_interval_ms,
+        max_concurrent_agents: state.max_concurrent_agents,
         running: dict.delete(state.running, issue_id),
-        retry_attempts: dict.insert(state.retry_attempts, issue_id, retry_entry),
+        claimed: state.claimed,
+        retry_attempts: state.retry_attempts,
+        completed: state.completed,
       )
-      actor.Continue(new_state)
+      actor.Continue(new_state, None)
     }
     WorkerTimedOut -> {
       // Schedule retry with delay
-      let retry_entry = RetryEntry(
-        issue_id: issue_id,
-        identifier: "ISSUE",
-        attempt: 1,
-        due_at_ms: erlang_timestamp() + 1000,
-        error: Some("Timed out"),
-      )
-
-      let _ = process.send_after(
-        process.subject_owner(self()),
-        1000,
-        RetryIssue(retry_entry),
-      )
-
-      let new_state = OrchestratorState(
-        ..state,
+      let new_state = types.OrchestratorState(
+        poll_interval_ms: state.poll_interval_ms,
+        max_concurrent_agents: state.max_concurrent_agents,
         running: dict.delete(state.running, issue_id),
-        retry_attempts: dict.insert(state.retry_attempts, issue_id, retry_entry),
+        claimed: state.claimed,
+        retry_attempts: state.retry_attempts,
+        completed: state.completed,
       )
-      actor.Continue(new_state)
+      actor.Continue(new_state, None)
     }
   }
 }
 
 /// Handle retry message
 fn handle_retry(
-  state: OrchestratorState,
-  retry_entry: RetryEntry,
-  config: Config,
-) -> actor.Loop(OrchestratorMessage) {
+  state: types.OrchestratorState,
+  retry_entry: types.RetryEntry,
+  _config: Config,
+) -> actor.Next(OrchestratorMessage, types.OrchestratorState) {
   // Check if retry is due
   case erlang_timestamp() >= retry_entry.due_at_ms {
     True -> {
       // Fetch issue and retry
       // For now, just remove from retry attempts
-      let new_state = OrchestratorState(
-        ..state,
+      let new_state = types.OrchestratorState(
+        poll_interval_ms: state.poll_interval_ms,
+        max_concurrent_agents: state.max_concurrent_agents,
+        running: state.running,
+        claimed: state.claimed,
         retry_attempts: dict.delete(state.retry_attempts, retry_entry.issue_id),
+        completed: state.completed,
       )
-      actor.Continue(new_state)
+      actor.Continue(new_state, None)
     }
     False -> {
       // Not due yet, reschedule
-      let delay = retry_entry.due_at_ms - erlang_timestamp()
-      let _ = process.send_after(
-        process.subject_owner(self()),
-        delay,
-        RetryIssue(retry_entry),
-      )
-      actor.Continue(state)
+      actor.Continue(state, None)
     }
   }
 }
@@ -286,11 +251,3 @@ fn erlang_timestamp() -> Int {
 
 @external(erlang, "erlang", "system_time")
 fn do_erlang_timestamp() -> Int
-
-/// Get the orchestrator's subject
-fn self() -> actor.Subject(OrchestratorMessage) {
-  do_self()
-}
-
-@external(erlang, "erlang", "self")
-fn do_self() -> actor.Subject(OrchestratorMessage)

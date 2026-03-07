@@ -1,0 +1,1 @@
+-record(thread_complete, {thread_id :: binary()}).

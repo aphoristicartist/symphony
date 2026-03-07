@@ -1,5 +1,6 @@
 import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/option
 import gleam/result
 import symphony/codex/app_server.{type CodexEvent, type CodexProcess}
@@ -131,7 +132,7 @@ fn stream_turn_events(
       app_server.ThreadComplete(..) -> {
         let _ = process.send(result, Ok(types.Succeeded))
       }
-      app_server.Error(message) -> {
+      app_server.ProcessError(message) -> {
         let _ = process.send(result, Error(message))
       }
       _ -> Nil
@@ -140,17 +141,16 @@ fn stream_turn_events(
 
   // Wait for result with timeout
   case process.receive(result, config.codex.turn_timeout_ms) {
-    Ok(phase) -> {
-      case phase {
-        types.StreamingTurn -> {
+    Ok(phase_result) -> {
+      case phase_result {
+        Ok(types.StreamingTurn) -> {
           // Continue with next turn
           run_turns(codex_process, "", config, issue, turn_count + 1)
         }
-        _ -> Ok(phase)
+        _ -> phase_result
       }
     }
-    Error(process.Timeout) -> Ok(types.TimedOut)
-    Error(_) -> Error("Failed to receive turn result")
+    Error(_) -> Ok(types.TimedOut)
   }
 }
 

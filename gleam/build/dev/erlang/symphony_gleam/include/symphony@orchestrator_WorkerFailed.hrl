@@ -1,0 +1,1 @@
+-record(worker_failed, {error :: binary()}).

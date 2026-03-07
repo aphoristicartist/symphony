@@ -1,0 +1,1 @@
+-record(process_error, {message :: binary()}).

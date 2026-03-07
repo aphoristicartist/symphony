@@ -49,7 +49,7 @@ pub type CodexEvent {
   TurnComplete(turn_id: String, input_tokens: Int, output_tokens: Int)
   ThreadStarted(thread_id: String)
   ThreadComplete(thread_id: String)
-  Error(message: String)
+  ProcessError(message: String)
 }
 
 /// Start a Codex thread by spawning the app-server process
@@ -102,7 +102,7 @@ fn stream_loop(process: CodexProcess, handler: fn(CodexEvent) -> Nil) -> Nil {
       handler(event)
       case event {
         ThreadComplete(_) -> Nil
-        Error(_) -> Nil
+        ProcessError(_) -> Nil
         _ -> stream_loop(process, handler)
       }
     }
@@ -124,89 +124,84 @@ fn do_read_event(process: CodexProcess) -> Result(String, String)
 
 /// Parse a Codex event from JSON
 fn parse_event(json_str: String) -> Result(CodexEvent, String) {
-  case json.decode(json_str, dynamic.dynamic) {
-    Ok(dyn) -> {
-      case dynamic.field("method", dynamic.optional(dynamic.string))(dyn) {
-        Ok(Some("turn.started")) -> {
-          case dynamic.field("params", dynamic.optional(dynamic.dynamic))(dyn) {
-            Ok(Some(params)) -> {
-              case dynamic.field("turn_id", dynamic.string)(params) {
-                Ok(turn_id) -> Ok(TurnStarted(turn_id: turn_id))
-                Error(_) -> Error("Invalid turn.started event")
-              }
-            }
-            _ -> Error("Missing params in turn.started")
-          }
-        }
-        Ok(Some("turn.update")) -> {
-          case dynamic.field("params", dynamic.optional(dynamic.dynamic))(dyn) {
-            Ok(Some(params)) -> {
-              use turn_id <- result.try(
-                dynamic.field("turn_id", dynamic.string)(params)
-                |> result.map_error(fn(_) { "Missing turn_id" }),
-              )
-              use content <- result.try(
-                dynamic.field("content", dynamic.string)(params)
-                |> result.map_error(fn(_) { "Missing content" }),
-              )
-              Ok(TurnUpdate(turn_id: turn_id, content: content))
-            }
-            _ -> Error("Missing params in turn.update")
-          }
-        }
-        Ok(Some("turn.complete")) -> {
-          case dynamic.field("params", dynamic.optional(dynamic.dynamic))(dyn) {
-            Ok(Some(params)) -> {
-              use turn_id <- result.try(
-                dynamic.field("turn_id", dynamic.string)(params)
-                |> result.map_error(fn(_) { "Missing turn_id" }),
-              )
-              use input_tokens <- result.try(
-                dynamic.field("input_tokens", dynamic.int)(params)
-                |> result.map_error(fn(_) { "Missing input_tokens" }),
-              )
-              use output_tokens <- result.try(
-                dynamic.field("output_tokens", dynamic.int)(params)
-                |> result.map_error(fn(_) { "Missing output_tokens" }),
-              )
-              Ok(TurnComplete(
-                turn_id: turn_id,
-                input_tokens: input_tokens,
-                output_tokens: output_tokens,
-              ))
-            }
-            _ -> Error("Missing params in turn.complete")
-          }
-        }
-        Ok(Some("thread.started")) -> {
-          case dynamic.field("params", dynamic.optional(dynamic.dynamic))(dyn) {
-            Ok(Some(params)) -> {
-              case dynamic.field("thread_id", dynamic.string)(params) {
-                Ok(thread_id) -> Ok(ThreadStarted(thread_id: thread_id))
-                Error(_) -> Error("Invalid thread.started event")
-              }
-            }
-            _ -> Error("Missing params in thread.started")
-          }
-        }
-        Ok(Some("thread.complete")) -> {
-          case dynamic.field("params", dynamic.optional(dynamic.dynamic))(dyn) {
-            Ok(Some(params)) -> {
-              case dynamic.field("thread_id", dynamic.string)(params) {
-                Ok(thread_id) -> Ok(ThreadComplete(thread_id: thread_id))
-                Error(_) -> Error("Invalid thread.complete event")
-              }
-            }
-            _ -> Error("Missing params in thread.complete")
-          }
-        }
-        Ok(Some(_)) -> Error("Unknown event method")
-        Ok(None) -> Error("Event missing method field")
-        Error(_) -> Error("Failed to parse event method")
-      }
-    }
-    Error(_) -> Error("Failed to decode event JSON")
+  use dyn <- result.try(
+    json.decode(json_str, dynamic.dynamic)
+    |> result.map_error(fn(_) { "Failed to decode event JSON" }),
+  )
+
+  use method <- result.try(
+    dynamic.field("method", dynamic.optional(dynamic.string))(dyn)
+    |> result.map_error(fn(_) { "Failed to parse event method" }),
+  )
+
+  case method {
+    Some("turn.started") -> parse_turn_started(dyn)
+    Some("turn.update") -> parse_turn_update(dyn)
+    Some("turn.complete") -> parse_turn_complete(dyn)
+    Some("thread.started") -> parse_thread_started(dyn)
+    Some("thread.complete") -> parse_thread_complete(dyn)
+    Some(_) -> Error("Unknown event method")
+    None -> Error("Event missing method field")
   }
+}
+
+fn parse_turn_started(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+  use params <- result.try(get_params(dyn))
+  use turn_id <- result.try(get_string_field(params, "turn_id"))
+  Ok(TurnStarted(turn_id: turn_id))
+}
+
+fn parse_turn_update(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+  use params <- result.try(get_params(dyn))
+  use turn_id <- result.try(get_string_field(params, "turn_id"))
+  use content <- result.try(get_string_field(params, "content"))
+  Ok(TurnUpdate(turn_id: turn_id, content: content))
+}
+
+fn parse_turn_complete(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+  use params <- result.try(get_params(dyn))
+  use turn_id <- result.try(get_string_field(params, "turn_id"))
+  use input_tokens <- result.try(get_int_field(params, "input_tokens"))
+  use output_tokens <- result.try(get_int_field(params, "output_tokens"))
+  Ok(TurnComplete(
+    turn_id: turn_id,
+    input_tokens: input_tokens,
+    output_tokens: output_tokens,
+  ))
+}
+
+fn parse_thread_started(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+  use params <- result.try(get_params(dyn))
+  use thread_id <- result.try(get_string_field(params, "thread_id"))
+  Ok(ThreadStarted(thread_id: thread_id))
+}
+
+fn parse_thread_complete(dyn: dynamic.Dynamic) -> Result(CodexEvent, String) {
+  use params <- result.try(get_params(dyn))
+  use thread_id <- result.try(get_string_field(params, "thread_id"))
+  Ok(ThreadComplete(thread_id: thread_id))
+}
+
+fn get_params(dyn: dynamic.Dynamic) -> Result(dynamic.Dynamic, String) {
+  use opt <- result.try(
+    dynamic.field("params", dynamic.optional(dynamic.dynamic))(dyn)
+    |> result.map_error(fn(_) { "Failed to parse params" }),
+  )
+  
+  case opt {
+    Some(p) -> Ok(p)
+    None -> Error("Missing params")
+  }
+}
+
+fn get_string_field(dyn: dynamic.Dynamic, field: String) -> Result(String, String) {
+  dynamic.field(field, dynamic.string)(dyn)
+  |> result.map_error(fn(_) { "Missing " <> field })
+}
+
+fn get_int_field(dyn: dynamic.Dynamic, field: String) -> Result(Int, String) {
+  dynamic.field(field, dynamic.int)(dyn)
+  |> result.map_error(fn(_) { "Missing " <> field })
 }
 
 /// Encode a JSON-RPC request
@@ -221,7 +216,7 @@ fn encode_request(request: JsonRpcRequest) -> String {
   }
   
   let params_fields = case request.params {
-    Some(params) -> [#("params", json.preprocessed(dynamic_to_json(params)))]
+    Some(params) -> [#("params", dynamic_to_json(params))]
     None -> []
   }
   
@@ -237,9 +232,11 @@ fn encode_request(request: JsonRpcRequest) -> String {
 
 /// Convert dynamic to JSON (simplified)
 fn dynamic_to_json(dyn: Dynamic) -> json.Json {
-  // This is a simplified conversion
-  // In production, we'd handle all cases properly
-  json.preprocessed(dyn)
+  // Simplified: just return string or null
+  case dynamic.string(dyn) {
+    Ok(s) -> json.string(s)
+    Error(_) -> json.null()
+  }
 }
 
 /// Stop the Codex process

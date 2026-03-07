@@ -1,0 +1,1 @@
+-record(turn_update, {turn_id :: binary(), content :: binary()}).

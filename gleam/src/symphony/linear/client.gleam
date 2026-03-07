@@ -1,7 +1,7 @@
 import gleam/dict
 import gleam/dynamic
-import gleam/http.{type Request}
-import gleam/http/request
+import gleam/http
+import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/httpc
 import gleam/int
@@ -11,7 +11,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import symphony/config.{type Config}
-import symphony/types.{type BlockerRef, type Issue}
+import symphony/types.{type BlockerRef, type Issue, BlockerRef, Issue}
 
 /// Linear GraphQL API endpoint
 const linear_api_url = "https://api.linear.app/graphql"
@@ -117,42 +117,55 @@ fn extract_state_from_response(body: dynamic.Dynamic) -> Result(String, String) 
 
 /// Decode an Issue from dynamic
 fn decode_issue(dyn: dynamic.Dynamic) -> Result(Issue, List(dynamic.DecodeError)) {
-  use id <- dynamic.field("id", dynamic.string)(dyn)
-  use identifier <- dynamic.field("identifier", dynamic.string)(dyn)
-  use title <- dynamic.field("title", dynamic.string)(dyn)
-  use description <- dynamic.optional_field(
+  let id_decoder = dynamic.field("id", dynamic.string)
+  let identifier_decoder = dynamic.field("identifier", dynamic.string)
+  let title_decoder = dynamic.field("title", dynamic.string)
+  let description_decoder = dynamic.optional_field(
     "description",
     dynamic.optional(dynamic.string),
-  )(dyn)
-  use state <- dynamic.field(
+  )
+  let state_decoder = dynamic.field(
     "state",
     dynamic.field("name", dynamic.string),
-  )(dyn)
-  use priority <- dynamic.optional_field(
+  )
+  let priority_decoder = dynamic.optional_field(
     "priority",
     dynamic.optional(dynamic.int),
-  )(dyn)
-  use branch_name <- dynamic.optional_field(
+  )
+  let branch_name_decoder = dynamic.optional_field(
     "branchName",
     dynamic.optional(dynamic.string),
-  )(dyn)
-  use url <- dynamic.optional_field("url", dynamic.optional(dynamic.string))(dyn)
-  use labels <- dynamic.field(
+  )
+  let url_decoder = dynamic.optional_field("url", dynamic.optional(dynamic.string))
+  let labels_decoder = dynamic.field(
     "labels",
     dynamic.field("nodes", dynamic.list(dynamic.field("name", dynamic.string))),
-  )(dyn)
-  use blocked_by <- dynamic.field(
+  )
+  let blocked_by_decoder = dynamic.field(
     "blockedBy",
     dynamic.field("nodes", dynamic.list(decode_blocker_ref)),
-  )(dyn)
-  use created_at <- dynamic.optional_field(
+  )
+  let created_at_decoder = dynamic.optional_field(
     "createdAt",
     dynamic.optional(dynamic.int),
-  )(dyn)
-  use updated_at <- dynamic.optional_field(
+  )
+  let updated_at_decoder = dynamic.optional_field(
     "updatedAt",
     dynamic.optional(dynamic.int),
-  )(dyn)
+  )
+
+  use id <- result.try(id_decoder(dyn))
+  use identifier <- result.try(identifier_decoder(dyn))
+  use title <- result.try(title_decoder(dyn))
+  use description <- result.try(description_decoder(dyn))
+  use state <- result.try(state_decoder(dyn))
+  use priority <- result.try(priority_decoder(dyn))
+  use branch_name <- result.try(branch_name_decoder(dyn))
+  use url <- result.try(url_decoder(dyn))
+  use labels <- result.try(labels_decoder(dyn))
+  use blocked_by <- result.try(blocked_by_decoder(dyn))
+  use created_at <- result.try(created_at_decoder(dyn))
+  use updated_at <- result.try(updated_at_decoder(dyn))
 
   Ok(Issue(
     id: id,
@@ -174,19 +187,20 @@ fn decode_issue(dyn: dynamic.Dynamic) -> Result(Issue, List(dynamic.DecodeError)
 fn decode_blocker_ref(
   dyn: dynamic.Dynamic,
 ) -> Result(BlockerRef, List(dynamic.DecodeError)) {
-  use id <- dynamic.optional_field("id", dynamic.optional(dynamic.string))(dyn)
-  use identifier <- dynamic.optional_field(
-    "identifier",
-    dynamic.optional(dynamic.string),
-  )(dyn)
-  use state <- dynamic.field(
+  let id_decoder = dynamic.optional_field("id", dynamic.string)
+  let identifier_decoder = dynamic.optional_field("identifier", dynamic.string)
+  let state_decoder = dynamic.field(
     "state",
     dynamic.optional(dynamic.field("name", dynamic.string)),
-  )(dyn)
+  )
+
+  use id <- result.try(id_decoder(dyn))
+  use identifier <- result.try(identifier_decoder(dyn))
+  use state <- result.try(state_decoder(dyn))
 
   Ok(BlockerRef(
-    id: id |> option.flatten,
-    identifier: identifier |> option.flatten,
-    state: state |> option.flatten,
+    id: id,
+    identifier: identifier,
+    state: state,
   ))
 }

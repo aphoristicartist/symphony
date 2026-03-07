@@ -1,9 +1,8 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, Some}
 import gleam/regex
-import gleam/result
 import gleam/string
 import symphony/types.{type Issue}
 
@@ -13,18 +12,18 @@ pub fn render(template: String, context: RenderContext) -> Result(String, String
   // Find all {{ ... }} patterns
   let assert Ok(var_pattern) = regex.from_string("\\{\\{\\s*([^}]+?)\\s*\\}\\}")
 
-  regex.replace(var_pattern, template, fn(match) {
-    let var_name = match
-    |> string.trim
-    |> string.replace("{{ ", "")
-    |> string.replace(" }}", "")
-    |> string.replace("{{", "")
-    |> string.replace("}}", "")
-    |> string.trim
-
-    case resolve_variable(var_name, context) {
-      Ok(value) -> value
-      Error(_) -> "{{ UNDEFINED: " <> var_name <> " }}"
+  let matches = regex.scan(with: var_pattern, content: template)
+  
+  // Replace each match
+  list.fold(matches, template, fn(acc, match) {
+    case match {
+      regex.Match(content: full_match, submatches: [Some(var_name)]) -> {
+        case resolve_variable(var_name, context) {
+          Ok(value) -> string.replace(acc, full_match, value)
+          Error(_) -> string.replace(acc, full_match, "{{ UNDEFINED: " <> var_name <> " }}")
+        }
+      }
+      _ -> acc
     }
   })
   |> Ok

@@ -26,7 +26,10 @@ pub fn main() {
               process.sleep_forever()
             }
             Error(e) -> {
-              io.println("Failed to start orchestrator: " <> e)
+              io.println(
+                "Failed to start orchestrator: "
+                <> errors.orchestration_error_message(e),
+              )
               process.sleep(1000)
             }
           }
@@ -38,17 +41,22 @@ pub fn main() {
       }
     }
     Error(e) -> {
-      io.println("Configuration error: " <> e)
+      io.println("Configuration error: " <> errors.config_error_message(e))
       process.sleep(1000)
     }
   }
 }
 
 /// Get configuration path from environment
-fn get_config_path() -> Result(String, String) {
+fn get_config_path() -> Result(String, errors.ConfigError) {
   case get_env("WORKFLOW_PATH") {
     Ok(path) -> Ok(path)
-    Error(_) -> Error("WORKFLOW_PATH environment variable not set")
+    Error(_) ->
+      Error(
+        errors.ValidationFailed(
+          error: errors.MissingRequiredField(field: "WORKFLOW_PATH"),
+        ),
+      )
   }
 }
 

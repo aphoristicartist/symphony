@@ -7,6 +7,7 @@ import gleam/result
 import gleam/set
 import symphony/agent_runner
 import symphony/config.{type Config}
+import symphony/errors
 import symphony/linear/client
 import symphony/types
 import symphony/validation
@@ -21,12 +22,14 @@ pub type OrchestratorMessage {
 /// Result from a worker
 pub type WorkerResult {
   WorkerSucceeded
-  WorkerFailed(error: String)
+  WorkerFailed(error: errors.RunError)
   WorkerTimedOut
 }
 
 /// Start the orchestrator
-pub fn start(config: Config) -> Result(Subject(OrchestratorMessage), String) {
+pub fn start(
+  config: Config,
+) -> Result(Subject(OrchestratorMessage), errors.OrchestrationError) {
   let initial_state = types.OrchestratorState(
     poll_interval_ms: config.polling.interval_ms,
     max_concurrent_agents: config.agent.max_concurrent_agents,
@@ -59,7 +62,13 @@ pub fn start(config: Config) -> Result(Subject(OrchestratorMessage), String) {
       }
     },
   ))
-  |> result.map_error(fn(_) { "Failed to start orchestrator actor" })
+  |> result.map_error(fn(_) {
+    errors.ReconciliationFailed(
+      issue_id: None,
+      operation: "orchestrator.start",
+      details: "Failed to start orchestrator actor",
+    )
+  })
 }
 
 /// Handle tick message

@@ -88,6 +88,32 @@ pub fn config_error_validation_message_test() {
   )
 }
 
+pub fn tracker_error_api_message_test() {
+  errors.tracker_error_message(
+    errors.ApiError(
+      operation: "fetch_active_issues",
+      details: "HTTP request failed",
+      status_code: Some(500),
+    ),
+  )
+  |> should.equal(
+    "Tracker API error in fetch_active_issues (status 500): HTTP request failed",
+  )
+}
+
+pub fn tracker_error_not_found_message_test() {
+  errors.tracker_error_message(
+    errors.NotFound(
+      resource: "issue",
+      identifier: Some("ISSUE-123"),
+      details: "State payload missing",
+    ),
+  )
+  |> should.equal(
+    "Tracker resource not found: issue (ISSUE-123) - State payload missing",
+  )
+}
+
 // ============================================================================
 // Template Tests
 // ============================================================================

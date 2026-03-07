@@ -1,5 +1,5 @@
 import gleam/int
-import gleam/option.{type Option}
+import gleam/option.{None, Some, type Option}
 
 /// Validation failures for typed config checks.
 pub type ValidationError {
@@ -103,5 +103,52 @@ pub fn config_error_message(error: ConfigError) -> String {
     ParseError(details) -> "Configuration parse error: " <> details
     ValidationFailed(error) ->
       "Configuration validation failed: " <> validation_error_message(error)
+  }
+}
+
+/// Deterministic human-readable message for tracker failures.
+pub fn tracker_error_message(error: TrackerError) -> String {
+  case error {
+    ApiError(operation, details, status_code) -> {
+      case status_code {
+        Some(code) ->
+          "Tracker API error in "
+          <> operation
+          <> " (status "
+          <> int.to_string(code)
+          <> "): "
+          <> details
+        None -> "Tracker API error in " <> operation <> ": " <> details
+      }
+    }
+    RateLimit(retry_after_ms, scope, details) -> {
+      let retry_text = case retry_after_ms {
+        Some(ms) -> int.to_string(ms) <> "ms"
+        None -> "unknown"
+      }
+      let scope_text = case scope {
+        Some(scope_name) -> scope_name
+        None -> "unspecified"
+      }
+
+      "Tracker rate limited (scope: "
+      <> scope_text
+      <> ", retry_after: "
+      <> retry_text
+      <> "): "
+      <> details
+    }
+    NotFound(resource, identifier, details) -> {
+      case identifier {
+        Some(value) ->
+          "Tracker resource not found: "
+          <> resource
+          <> " ("
+          <> value
+          <> ") - "
+          <> details
+        None -> "Tracker resource not found: " <> resource <> " - " <> details
+      }
+    }
   }
 }

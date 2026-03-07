@@ -8,19 +8,26 @@ import gleam/json
 import gleam/option
 import gleam/result
 import symphony/config.{type Config}
+import symphony/errors
 import symphony/types.{type BlockerRef, type Issue, BlockerRef, Issue}
 
 /// Linear GraphQL API endpoint
 const linear_api_url = "https://api.linear.app/graphql"
 
 /// Fetch active issues from Linear
-pub fn fetch_active_issues(config: Config) -> Result(List(Issue), String) {
+pub fn fetch_active_issues(config: Config) -> Result(List(Issue), errors.TrackerError) {
   let query = build_active_issues_query(config.tracker.project_slug)
   let req = build_graphql_request(config.tracker.api_key, query)
 
   use response <- result.try(
     httpc.send(req)
-    |> result.map_error(fn(_) { "HTTP request failed" }),
+    |> result.map_error(fn(_) {
+      errors.ApiError(
+        operation: "fetch_active_issues",
+        details: "HTTP request failed",
+        status_code: option.None,
+      )
+    }),
   )
 
   use body <- result.try(parse_graphql_response(response))
@@ -31,17 +38,23 @@ pub fn fetch_active_issues(config: Config) -> Result(List(Issue), String) {
 pub fn fetch_issue_state(
   config: Config,
   issue_id: String,
-) -> Result(String, String) {
+) -> Result(String, errors.TrackerError) {
   let query = build_issue_state_query(issue_id)
   let req = build_graphql_request(config.tracker.api_key, query)
 
   use response <- result.try(
     httpc.send(req)
-    |> result.map_error(fn(_) { "HTTP request failed" }),
+    |> result.map_error(fn(_) {
+      errors.ApiError(
+        operation: "fetch_issue_state",
+        details: "HTTP request failed",
+        status_code: option.None,
+      )
+    }),
   )
 
   use body <- result.try(parse_graphql_response(response))
-  extract_state_from_response(body)
+  extract_state_from_response(body, issue_id)
 }
 
 /// Build GraphQL query for active issues
@@ -69,18 +82,45 @@ fn build_graphql_request(api_key: String, query: String) -> Request(String) {
 }
 
 /// Parse GraphQL response
-fn parse_graphql_response(response: Response(String)) -> Result(dynamic.Dynamic, String) {
+fn parse_graphql_response(
+  response: Response(String),
+) -> Result(dynamic.Dynamic, errors.TrackerError) {
   case response.status {
     200 -> {
       json.decode(response.body, dynamic.dynamic)
-      |> result.map_error(fn(_) { "Failed to parse JSON response" })
+      |> result.map_error(fn(_) {
+        errors.ApiError(
+          operation: "parse_graphql_response",
+          details: "Failed to parse JSON response",
+          status_code: option.Some(200),
+        )
+      })
     }
-    _ -> Error("HTTP error: " <> int.to_string(response.status))
+    429 -> {
+      Error(
+        errors.RateLimit(
+          retry_after_ms: option.None,
+          scope: option.None,
+          details: "Linear API returned HTTP 429",
+        ),
+      )
+    }
+    _ -> {
+      Error(
+        errors.ApiError(
+          operation: "graphql_request",
+          details: "HTTP error: " <> int.to_string(response.status),
+          status_code: option.Some(response.status),
+        ),
+      )
+    }
   }
 }
 
 /// Extract issues from GraphQL response
-fn extract_issues_from_response(body: dynamic.Dynamic) -> Result(List(Issue), String) {
+fn extract_issues_from_response(
+  body: dynamic.Dynamic,
+) -> Result(List(Issue), errors.TrackerError) {
   // Navigate the response structure: data.issues.nodes
   let decoder = dynamic.field(
     "data",
@@ -92,12 +132,22 @@ fn extract_issues_from_response(body: dynamic.Dynamic) -> Result(List(Issue), St
 
   case decoder(body) {
     Ok(issues) -> Ok(issues)
-    Error(_) -> Error("Failed to decode issues from response")
+    Error(_) ->
+      Error(
+        errors.ApiError(
+          operation: "decode_active_issues",
+          details: "Failed to decode issues from response",
+          status_code: option.None,
+        ),
+      )
   }
 }
 
 /// Extract state from GraphQL response
-fn extract_state_from_response(body: dynamic.Dynamic) -> Result(String, String) {
+fn extract_state_from_response(
+  body: dynamic.Dynamic,
+  issue_id: String,
+) -> Result(String, errors.TrackerError) {
   let decoder = dynamic.field(
     "data",
     dynamic.field(
@@ -108,7 +158,14 @@ fn extract_state_from_response(body: dynamic.Dynamic) -> Result(String, String) 
 
   case decoder(body) {
     Ok(state) -> Ok(state)
-    Error(_) -> Error("Failed to decode issue state from response")
+    Error(_) ->
+      Error(
+        errors.NotFound(
+          resource: "issue",
+          identifier: option.Some(issue_id),
+          details: "Failed to decode issue state from response",
+        ),
+      )
   }
 }
 

@@ -64,10 +64,7 @@ pub fn load(path: String) -> Result(Config, errors.ConfigError) {
     |> result.map_error(fn(_) { errors.MissingFile(path: path) }),
   )
 
-  use config_dict <- result.try(
-    parse_yaml_front_matter(content)
-    |> result.map_error(fn(e) { errors.ParseError(details: e) }),
-  )
+  use config_dict <- result.try(parse_yaml_front_matter(content))
 
   use config <- result.try(build_config(config_dict))
 
@@ -75,25 +72,31 @@ pub fn load(path: String) -> Result(Config, errors.ConfigError) {
 }
 
 /// Parse YAML front matter from WORKFLOW.md content
-fn parse_yaml_front_matter(content: String) -> Result(Dict(String, Dynamic), String) {
+fn parse_yaml_front_matter(
+  content: String,
+) -> Result(Dict(String, Dynamic), errors.ConfigError) {
   let lines = string.split(content, "\n")
 
   case lines {
     ["---", ..rest] -> {
       case find_closing_delimiter(rest, []) {
-        Ok(yaml_lines) -> {
-          parse_simple_yaml(yaml_lines)
-          |> result.map_error(fn(e) { "YAML parse error: " <> e })
-        }
+        Ok(yaml_lines) -> parse_simple_yaml(yaml_lines)
         Error(e) -> Error(e)
       }
     }
-    _ -> Error("WORKFLOW.md must start with YAML front matter (---)")
+    _ ->
+      Error(
+        errors.ParseError(
+          details: "WORKFLOW.md must start with YAML front matter (---)",
+        ),
+      )
   }
 }
 
 /// Simple YAML parser for basic key-value pairs
-fn parse_simple_yaml(lines: List(String)) -> Result(Dict(String, Dynamic), String) {
+fn parse_simple_yaml(
+  lines: List(String),
+) -> Result(Dict(String, Dynamic), errors.ConfigError) {
   parse_yaml_lines(lines, dict.new())
 }
 
@@ -101,7 +104,7 @@ fn parse_simple_yaml(lines: List(String)) -> Result(Dict(String, Dynamic), Strin
 fn parse_yaml_lines(
   lines: List(String),
   acc: Dict(String, Dynamic),
-) -> Result(Dict(String, Dynamic), String) {
+) -> Result(Dict(String, Dynamic), errors.ConfigError) {
   case lines {
     [] -> Ok(acc)
     [line, ..rest] -> {
@@ -142,10 +145,20 @@ fn parse_yaml_lines(
                       let new_acc = dict.insert(acc, parent, dynamic.from(new_parent))
                       parse_yaml_lines(rest, new_acc)
                     }
-                    Error(_) -> Error("Invalid nested structure for " <> parent)
+                    Error(_) ->
+                      Error(
+                        errors.ParseError(
+                          details: "Invalid nested structure for " <> parent,
+                        ),
+                      )
                   }
                 }
-                Error(_) -> Error("Parent section not found: " <> parent)
+                Error(_) ->
+                  Error(
+                    errors.ParseError(
+                      details: "Parent section not found: " <> parent,
+                    ),
+                  )
               }
             }
             Error(e) -> Error(e)
@@ -164,13 +177,13 @@ type YamlLine {
 }
 
 /// Parse a single YAML line
-fn parse_yaml_line(line: String) -> Result(YamlLine, String) {
+fn parse_yaml_line(line: String) -> Result(YamlLine, errors.ConfigError) {
   // Check for nested key-value (with leading spaces)
   case string.starts_with(line, "  ") || string.starts_with(line, "\t") {
     True -> {
       // This is a nested line - we'll handle this in the parent context
       // For now, just treat as error since we need parent context
-      Error("Nested values require parent context")
+      Error(errors.ParseError(details: "Nested values require parent context"))
     }
     False -> {
       // Check for section start (ends with :)
@@ -187,7 +200,8 @@ fn parse_yaml_line(line: String) -> Result(YamlLine, String) {
               let trimmed_value = string.trim(value)
               Ok(KeyValue(trimmed_key, trimmed_value))
             }
-            Error(_) -> Error("Invalid YAML line: " <> line)
+            Error(_) ->
+              Error(errors.ParseError(details: "Invalid YAML line: " <> line))
           }
         }
       }
@@ -199,9 +213,9 @@ fn parse_yaml_line(line: String) -> Result(YamlLine, String) {
 fn find_closing_delimiter(
   lines: List(String),
   acc: List(String),
-) -> Result(List(String), String) {
+) -> Result(List(String), errors.ConfigError) {
   case lines {
-    [] -> Error("YAML front matter not closed (missing ---)")
+    [] -> Error(errors.ParseError(details: "YAML front matter not closed (missing ---)"))
     ["---", .._] -> Ok(list.reverse(acc))
     [line, ..rest] -> find_closing_delimiter(rest, [line, ..acc])
   }

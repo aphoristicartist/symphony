@@ -1,4 +1,5 @@
 import gleam/option
+import gleam/result
 import simplifile
 import symphony/errors
 import symphony/types
@@ -49,29 +50,34 @@ pub fn run_hook(
     False -> {
       // Execute the script using Erlang :os.cmd
       let cmd = "cd " <> cwd <> " && " <> script <> " 2>&1"
-      let result = run_command(cmd, timeout_ms)
+      let result = run_command(cmd, timeout_ms, hook, cwd)
 
       case result {
         Ok(_output) -> Ok(Nil)
-        Error(details) ->
-          Error(
-            errors.HookFailed(
-              hook: hook,
-              workspace_path: cwd,
-              details: details,
-              exit_code: option.None,
-            ),
-          )
+        Error(error) -> Error(error)
       }
     }
   }
 }
 
 /// Run a command with timeout using Erlang FFI
-fn run_command(cmd: String, _timeout_ms: Int) -> Result(String, String) {
+fn run_command(
+  cmd: String,
+  _timeout_ms: Int,
+  hook: errors.WorkspaceHook,
+  workspace_path: String,
+) -> Result(String, errors.WorkspaceError) {
   // For now, use a simple synchronous execution
   // In production, this would use proper timeout handling
   do_run_command(cmd)
+  |> result.map_error(fn(details) {
+    errors.HookFailed(
+      hook: hook,
+      workspace_path: workspace_path,
+      details: details,
+      exit_code: option.None,
+    )
+  })
 }
 
 @external(erlang, "symphony_workspace_ffi", "run_command")

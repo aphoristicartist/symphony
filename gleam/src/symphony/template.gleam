@@ -4,11 +4,15 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/regex
 import gleam/string
+import symphony/errors
 import symphony/types.{type Issue}
 
 /// Render a template string with variable substitution
 /// Supports: {{ variable }}, {{ nested.field }}, {{ object.property }}
-pub fn render(template: String, context: RenderContext) -> Result(String, String) {
+pub fn render(
+  template: String,
+  context: RenderContext,
+) -> Result(String, errors.ValidationError) {
   // Find all {{ ... }} patterns
   let assert Ok(var_pattern) = regex.from_string("\\{\\{\\s*([^}]+?)\\s*\\}\\}")
 
@@ -39,7 +43,10 @@ pub type RenderContext {
 }
 
 /// Resolve a variable name to its value
-fn resolve_variable(name: String, context: RenderContext) -> Result(String, String) {
+fn resolve_variable(
+  name: String,
+  context: RenderContext,
+) -> Result(String, errors.ValidationError) {
   let parts = string.split(name, ".")
   
   case parts {
@@ -49,22 +56,35 @@ fn resolve_variable(name: String, context: RenderContext) -> Result(String, Stri
     [key] -> {
       case dict.get(context.extra, key) {
         Ok(value) -> Ok(value)
-        Error(_) -> Error("Undefined variable: " <> key)
+        Error(_) ->
+          Error(errors.MissingRequiredField(field: "template.extra." <> key))
       }
     }
     [namespace, ..rest] -> {
       // Try to resolve nested path
       case namespace {
         "issue" -> resolve_nested_issue_field(rest, context.issue)
-        _ -> Error("Unknown namespace: " <> namespace)
+        _ ->
+          Error(
+            errors.UnsupportedValue(
+              field: "template.namespace",
+              value: namespace,
+            ),
+          )
       }
     }
-    _ -> Error("Invalid variable path: " <> name)
+    _ ->
+      Error(
+        errors.UnsupportedValue(field: "template.variable", value: name),
+      )
   }
 }
 
 /// Resolve an issue field
-fn resolve_issue_field(field: String, issue: Issue) -> Result(String, String) {
+fn resolve_issue_field(
+  field: String,
+  issue: Issue,
+) -> Result(String, errors.ValidationError) {
   case field {
     "id" -> Ok(issue.id)
     "identifier" -> Ok(issue.identifier)
@@ -77,18 +97,29 @@ fn resolve_issue_field(field: String, issue: Issue) -> Result(String, String) {
     "labels" -> Ok(string.join(issue.labels, ", "))
     "created_at" -> Ok(option.unwrap(option.map(issue.created_at, int.to_string), ""))
     "updated_at" -> Ok(option.unwrap(option.map(issue.updated_at, int.to_string), ""))
-    _ -> Error("Unknown issue field: " <> field)
+    _ ->
+      Error(
+        errors.UnsupportedValue(field: "template.issue.field", value: field),
+      )
   }
 }
 
 /// Resolve nested issue field
-fn resolve_nested_issue_field(path: List(String), issue: Issue) -> Result(String, String) {
+fn resolve_nested_issue_field(
+  path: List(String),
+  issue: Issue,
+) -> Result(String, errors.ValidationError) {
   case path {
     [] -> Ok(format_issue(issue))
     [field] -> resolve_issue_field(field, issue)
     [field, ..rest] -> {
       // For now, we don't support deeper nesting
-      Error("Nested field access not supported: " <> string.join([field, ..rest], "."))
+      Error(
+        errors.UnsupportedValue(
+          field: "template.issue.path",
+          value: string.join([field, ..rest], "."),
+        ),
+      )
     }
   }
 }

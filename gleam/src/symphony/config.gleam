@@ -69,10 +69,7 @@ pub fn load(path: String) -> Result(Config, errors.ConfigError) {
     |> result.map_error(fn(e) { errors.ParseError(details: e) }),
   )
 
-  use config <- result.try(
-    build_config(config_dict)
-    |> result.map_error(fn(e) { errors.ParseError(details: e) }),
-  )
+  use config <- result.try(build_config(config_dict))
 
   Ok(config)
 }
@@ -211,7 +208,7 @@ fn find_closing_delimiter(
 }
 
 /// Build Config from parsed YAML dictionary
-fn build_config(dict: Dict(String, Dynamic)) -> Result(Config, String) {
+fn build_config(dict: Dict(String, Dynamic)) -> Result(Config, errors.ConfigError) {
   use tracker <- result.try(build_tracker_config(dict))
   use polling <- result.try(build_polling_config(dict))
   use workspace <- result.try(build_workspace_config(dict))
@@ -232,7 +229,7 @@ fn build_config(dict: Dict(String, Dynamic)) -> Result(Config, String) {
 /// Build tracker configuration with defaults
 fn build_tracker_config(
   dict: Dict(String, Dynamic),
-) -> Result(TrackerConfig, String) {
+) -> Result(TrackerConfig, errors.ConfigError) {
   use tracker_dict <- result.try(get_dict(dict, "tracker"))
 
   use kind <- result.try(get_string_required(tracker_dict, "kind", "tracker.kind"))
@@ -265,7 +262,7 @@ fn build_tracker_config(
 /// Build polling configuration with defaults
 fn build_polling_config(
   dict: Dict(String, Dynamic),
-) -> Result(PollingConfig, String) {
+) -> Result(PollingConfig, errors.ConfigError) {
   use polling_dict <- result.try(get_dict(dict, "polling"))
 
   let interval_ms = get_int_with_default(polling_dict, "interval_ms", 30000)
@@ -276,7 +273,7 @@ fn build_polling_config(
 /// Build workspace configuration with defaults
 fn build_workspace_config(
   dict: Dict(String, Dynamic),
-) -> Result(WorkspaceConfig, String) {
+) -> Result(WorkspaceConfig, errors.ConfigError) {
   use workspace_dict <- result.try(get_dict(dict, "workspace"))
 
   let root = get_string_with_default(
@@ -289,7 +286,9 @@ fn build_workspace_config(
 }
 
 /// Build agent configuration with defaults
-fn build_agent_config(dict: Dict(String, Dynamic)) -> Result(AgentConfig, String) {
+fn build_agent_config(
+  dict: Dict(String, Dynamic),
+) -> Result(AgentConfig, errors.ConfigError) {
   use agent_dict <- result.try(get_dict(dict, "agent"))
 
   let max_concurrent_agents = get_int_with_default(
@@ -306,7 +305,9 @@ fn build_agent_config(dict: Dict(String, Dynamic)) -> Result(AgentConfig, String
 }
 
 /// Build Codex configuration with defaults
-fn build_codex_config(dict: Dict(String, Dynamic)) -> Result(CodexConfig, String) {
+fn build_codex_config(
+  dict: Dict(String, Dynamic),
+) -> Result(CodexConfig, errors.ConfigError) {
   use codex_dict <- result.try(get_dict(dict, "codex"))
 
   let command = get_string_with_default(codex_dict, "command", "codex app-server")
@@ -316,7 +317,7 @@ fn build_codex_config(dict: Dict(String, Dynamic)) -> Result(CodexConfig, String
 }
 
 /// Get prompt template (required)
-fn get_prompt_template(dict: Dict(String, Dynamic)) -> Result(String, String) {
+fn get_prompt_template(dict: Dict(String, Dynamic)) -> Result(String, errors.ConfigError) {
   get_string_required(dict, "prompt_template", "prompt_template")
 }
 
@@ -328,16 +329,16 @@ fn get_prompt_template(dict: Dict(String, Dynamic)) -> Result(String, String) {
 fn get_dict(
   dict: Dict(String, Dynamic),
   key: String,
-) -> Result(Dict(String, Dynamic), String) {
+) -> Result(Dict(String, Dynamic), errors.ConfigError) {
   case dict.get(dict, key) {
     Ok(dyn) -> {
       let decoder = dynamic.dict(dynamic.string, dynamic.dynamic)
       case decoder(dyn) {
         Ok(d) -> Ok(d)
-        Error(_) -> Error(key <> " must be a mapping")
+        Error(_) -> Error(config_validation_type(key, "mapping"))
       }
     }
-    Error(_) -> Error("Missing required key: " <> key)
+    Error(_) -> Error(config_validation_missing(key))
   }
 }
 
@@ -346,15 +347,15 @@ fn get_string_required(
   dict: Dict(String, Dynamic),
   key: String,
   path: String,
-) -> Result(String, String) {
+) -> Result(String, errors.ConfigError) {
   case dict.get(dict, key) {
     Ok(dyn) -> {
       case dynamic.string(dyn) {
         Ok(s) -> expand_env_vars(s)
-        Error(_) -> Error(path <> " must be a string")
+        Error(_) -> Error(config_validation_type(path, "string"))
       }
     }
-    Error(_) -> Error("Missing required key: " <> path)
+    Error(_) -> Error(config_validation_missing(path))
   }
 }
 
@@ -363,15 +364,15 @@ fn get_string_with_env(
   dict: Dict(String, Dynamic),
   key: String,
   path: String,
-) -> Result(String, String) {
+) -> Result(String, errors.ConfigError) {
   case dict.get(dict, key) {
     Ok(dyn) -> {
       case dynamic.string(dyn) {
         Ok(s) -> expand_env_vars(s)
-        Error(_) -> Error(path <> " must be a string")
+        Error(_) -> Error(config_validation_type(path, "string"))
       }
     }
-    Error(_) -> Error("Missing required key: " <> path)
+    Error(_) -> Error(config_validation_missing(path))
   }
 }
 
@@ -435,7 +436,7 @@ fn get_string_list_with_default(
 }
 
 /// Expand environment variables in a string ($VAR_NAME)
-fn expand_env_vars(s: String) -> Result(String, String) {
+fn expand_env_vars(s: String) -> Result(String, errors.ConfigError) {
   case string.split(s, "$") {
     [] -> Ok(s)
     [first] -> Ok(first)
@@ -449,7 +450,7 @@ fn expand_env_vars(s: String) -> Result(String, String) {
 }
 
 /// Expand a single variable reference
-fn expand_single_var(acc: String, part: String) -> Result(String, String) {
+fn expand_single_var(acc: String, part: String) -> Result(String, errors.ConfigError) {
   // Find the variable name (alphanumeric and underscore)
   let var_name_end = find_var_name_end(part, 0)
   let var_name = string.slice(part, 0, var_name_end)
@@ -460,7 +461,7 @@ fn expand_single_var(acc: String, part: String) -> Result(String, String) {
     _ -> {
       case os.get_env(var_name) {
         Ok(value) -> Ok(acc <> value <> rest)
-        Error(_) -> Error("Environment variable not found: " <> var_name)
+        Error(_) -> Error(config_validation_missing("env." <> var_name))
       }
     }
   }
@@ -503,4 +504,16 @@ fn expand_env_vars_or_default(s: String, default: String) -> String {
     Ok(expanded) -> expanded
     Error(_) -> default
   }
+}
+
+fn config_validation_missing(field: String) -> errors.ConfigError {
+  errors.ValidationFailed(
+    error: errors.MissingRequiredField(field: field),
+  )
+}
+
+fn config_validation_type(field: String, expected: String) -> errors.ConfigError {
+  errors.ValidationFailed(
+    error: errors.UnsupportedValue(field: field, value: expected),
+  )
 }

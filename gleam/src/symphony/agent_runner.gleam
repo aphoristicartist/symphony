@@ -85,11 +85,11 @@ fn build_prompt(
 ) -> Result(String, errors.RunError) {
   let context = template.context_from_issue(issue, attempt)
   template.render(config.prompt_template, context)
-  |> result.map_error(fn(details) {
+  |> result.map_error(fn(error) {
     errors.AgentFailure(
       errors.ProtocolError(
         event: option.Some("prompt_template"),
-        details: details,
+        details: errors.validation_error_message(error),
       ),
     )
   })

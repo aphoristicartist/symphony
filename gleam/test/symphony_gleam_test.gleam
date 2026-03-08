@@ -1,8 +1,11 @@
+import gleam/dict
 import gleam/option.{None, Some}
+import gleam/set
 import gleam/string
 import gleeunit
 import gleeunit/should
 import simplifile
+import symphony/codex/app_server
 import symphony/config
 import symphony/errors
 import symphony/template
@@ -227,6 +230,162 @@ pub fn run_error_agent_message_test() {
   )
   |> should.equal(
     "Agent protocol error at start_turn: invalid JSON-RPC payload",
+  )
+}
+
+// ============================================================================
+// Codex Protocol and Accounting Tests
+// ============================================================================
+
+pub fn codex_decode_turn_complete_event_test() {
+  let payload =
+    "{\"method\":\"turn/completed\",\"params\":{\"turn_id\":\"turn-1\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}},\"rate_limits\":{\"request_limit\":100,\"request_remaining\":90,\"token_limit\":1000,\"token_remaining\":850}}"
+
+  let assert app_server.TurnComplete(
+    turn_id: turn_id,
+    usage: usage,
+    rate_limits: Some(rate_limits),
+  ) = app_server.decode_event_line(payload)
+
+  turn_id
+  |> should.equal("turn-1")
+
+  usage.total_tokens
+  |> should.equal(14)
+
+  rate_limits.request_remaining
+  |> should.equal(Some(90))
+}
+
+pub fn codex_decode_token_usage_nested_event_test() {
+  let payload =
+    "{\"method\":\"thread/tokenUsage/updated\",\"params\":{\"tokenUsage\":{\"total\":{\"inputTokens\":21,\"outputTokens\":9,\"totalTokens\":30}}}}"
+
+  let assert app_server.TokenUsageUpdated(usage: usage, rate_limits: None) =
+    app_server.decode_event_line(payload)
+
+  usage.input_tokens
+  |> should.equal(21)
+
+  usage.output_tokens
+  |> should.equal(9)
+
+  usage.total_tokens
+  |> should.equal(30)
+}
+
+pub fn codex_decode_unknown_event_test() {
+  app_server.decode_event_line("{\"method\":\"mystery/event\"}")
+  |> should.equal(app_server.UnknownEvent(method: "mystery/event"))
+}
+
+pub fn codex_decode_malformed_event_test() {
+  app_server.decode_event_line("{\"params\":{\"turn_id\":\"x\"}}")
+  |> should.equal(app_server.MalformedEvent(
+    details: "event missing method field",
+  ))
+}
+
+pub fn codex_accounting_applies_deterministic_deltas_test() {
+  let state0 = empty_orchestrator_state()
+  let baseline = app_server.zero_token_snapshot()
+
+  let first_event =
+    app_server.TurnComplete(
+      turn_id: "turn-1",
+      usage: app_server.TokenSnapshot(
+        input_tokens: 10,
+        output_tokens: 4,
+        total_tokens: 14,
+      ),
+      rate_limits: None,
+    )
+
+  let #(state1, snapshot1) =
+    app_server.apply_event_accounting(state0, baseline, first_event)
+
+  state1.codex_totals.total_tokens
+  |> should.equal(14)
+
+  snapshot1.total_tokens
+  |> should.equal(14)
+
+  let rate_limits =
+    types.CodexRateLimits(
+      request_limit: Some(100),
+      request_remaining: Some(80),
+      request_reset_at_ms: None,
+      token_limit: Some(1000),
+      token_remaining: Some(700),
+      token_reset_at_ms: None,
+    )
+
+  let second_event =
+    app_server.TokenUsageUpdated(
+      usage: app_server.TokenSnapshot(
+        input_tokens: 12,
+        output_tokens: 6,
+        total_tokens: 18,
+      ),
+      rate_limits: Some(rate_limits),
+    )
+
+  let #(state2, snapshot2) =
+    app_server.apply_event_accounting(state1, snapshot1, second_event)
+
+  state2.codex_totals.input_tokens
+  |> should.equal(12)
+
+  state2.codex_totals.output_tokens
+  |> should.equal(6)
+
+  state2.codex_totals.total_tokens
+  |> should.equal(18)
+
+  state2.codex_rate_limits
+  |> should.equal(Some(rate_limits))
+
+  let stale_event =
+    app_server.TokenUsageUpdated(
+      usage: app_server.TokenSnapshot(
+        input_tokens: 11,
+        output_tokens: 5,
+        total_tokens: 16,
+      ),
+      rate_limits: None,
+    )
+
+  let #(state3, snapshot3) =
+    app_server.apply_event_accounting(state2, snapshot2, stale_event)
+
+  state3.codex_totals.input_tokens
+  |> should.equal(12)
+
+  state3.codex_totals.output_tokens
+  |> should.equal(6)
+
+  state3.codex_totals.total_tokens
+  |> should.equal(18)
+
+  snapshot3.total_tokens
+  |> should.equal(18)
+}
+
+fn empty_orchestrator_state() -> types.OrchestratorState {
+  types.OrchestratorState(
+    poll_interval_ms: 1000,
+    max_concurrent_agents: 1,
+    running: dict.new(),
+    claimed: set.new(),
+    retry_attempts: dict.new(),
+    completed: set.new(),
+    codex_totals: types.CodexTotals(
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      seconds_running: 0.0,
+    ),
+    codex_rate_limits: None,
   )
 }
 

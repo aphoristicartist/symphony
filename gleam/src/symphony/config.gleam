@@ -3,6 +3,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/erlang/os
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/string
 import simplifile
@@ -97,71 +98,31 @@ fn parse_yaml_front_matter(
 fn parse_simple_yaml(
   lines: List(String),
 ) -> Result(Dict(String, Dynamic), errors.ConfigError) {
-  parse_yaml_lines(lines, dict.new())
+  parse_yaml_lines(lines, dict.new(), option.None)
 }
 
 /// Parse YAML lines into a dictionary
 fn parse_yaml_lines(
   lines: List(String),
   acc: Dict(String, Dynamic),
+  current_section: option.Option(String),
 ) -> Result(Dict(String, Dynamic), errors.ConfigError) {
   case lines {
     [] -> Ok(acc)
     [line, ..rest] -> {
       let trimmed = string.trim(line)
       case string.starts_with(trimmed, "#") || trimmed == "" {
-        True -> parse_yaml_lines(rest, acc)
+        True -> parse_yaml_lines(rest, acc, current_section)
         False -> {
-          case parse_yaml_line(trimmed) {
-            Ok(KeyValue(key, value)) -> {
-              let new_acc = dict.insert(acc, key, dynamic.from(value))
-              parse_yaml_lines(rest, new_acc)
-            }
-            Ok(SectionStart(name)) -> {
-              // Create nested dict for section
-              case dict.get(acc, name) {
-                Ok(_) -> parse_yaml_lines(rest, acc)
-                Error(_) -> {
-                  let new_acc = dict.insert(
-                    acc,
-                    name,
-                    dynamic.from(dict.new()),
-                  )
-                  parse_yaml_lines(rest, new_acc)
-                }
-              }
-            }
-            Ok(NestedKeyValue(parent, key, value)) -> {
-              case dict.get(acc, parent) {
-                Ok(parent_dyn) -> {
-                  let decoder = dynamic.dict(dynamic.string, dynamic.dynamic)
-                  case decoder(parent_dyn) {
-                    Ok(parent_dict) -> {
-                      let new_parent = dict.insert(
-                        parent_dict,
-                        key,
-                        dynamic.from(value),
-                      )
-                      let new_acc = dict.insert(acc, parent, dynamic.from(new_parent))
-                      parse_yaml_lines(rest, new_acc)
-                    }
-                    Error(_) ->
-                      Error(
-                        errors.ParseError(
-                          details: "Invalid nested structure for " <> parent,
-                        ),
-                      )
-                  }
-                }
-                Error(_) ->
-                  Error(
-                    errors.ParseError(
-                      details: "Parent section not found: " <> parent,
-                    ),
-                  )
-              }
-            }
-            Error(e) -> Error(e)
+          case is_indented(line) {
+            True ->
+              parse_nested_line(
+                trimmed,
+                acc,
+                current_section,
+                rest,
+              )
+            False -> parse_root_line(trimmed, acc, rest)
           }
         }
       }
@@ -169,44 +130,110 @@ fn parse_yaml_lines(
   }
 }
 
-/// Types of YAML lines we can parse
-type YamlLine {
-  KeyValue(String, String)
-  SectionStart(String)
-  NestedKeyValue(String, String, String)
-}
-
-/// Parse a single YAML line
-fn parse_yaml_line(line: String) -> Result(YamlLine, errors.ConfigError) {
-  // Check for nested key-value (with leading spaces)
-  case string.starts_with(line, "  ") || string.starts_with(line, "\t") {
+fn parse_root_line(
+  line: String,
+  acc: Dict(String, Dynamic),
+  rest: List(String),
+) -> Result(Dict(String, Dynamic), errors.ConfigError) {
+  case is_section_start(line) {
     True -> {
-      // This is a nested line - we'll handle this in the parent context
-      // For now, just treat as error since we need parent context
-      Error(errors.ParseError(details: "Nested values require parent context"))
+      let section = string.drop_right(line, 1) |> string.trim
+
+      case dict.get(acc, section) {
+        Ok(existing) -> {
+          let decoder = dynamic.dict(dynamic.string, dynamic.dynamic)
+          case decoder(existing) {
+            Ok(_) -> parse_yaml_lines(rest, acc, option.Some(section))
+            Error(_) ->
+              Error(
+                errors.ParseError(
+                  details: "Section " <> section <> " must be a mapping",
+                ),
+              )
+          }
+        }
+        Error(_) -> {
+          let new_acc = dict.insert(acc, section, dynamic.from(dict.new()))
+          parse_yaml_lines(rest, new_acc, option.Some(section))
+        }
+      }
     }
     False -> {
-      // Check for section start (ends with :)
-      case string.ends_with(line, ":") && !string.contains(line, ": ") {
-        True -> {
-          let name = string.drop_right(line, 1) |> string.trim
-          Ok(SectionStart(name))
-        }
-        False -> {
-          // Check for key-value pair
-          case string.split_once(line, ":") {
-            Ok(#(key, value)) -> {
-              let trimmed_key = string.trim(key)
-              let trimmed_value = string.trim(value)
-              Ok(KeyValue(trimmed_key, trimmed_value))
-            }
-            Error(_) ->
-              Error(errors.ParseError(details: "Invalid YAML line: " <> line))
-          }
-        }
-      }
+      use #(key, value) <- result.try(parse_key_value(line))
+      let new_acc = dict.insert(acc, key, dynamic.from(value))
+      parse_yaml_lines(rest, new_acc, option.None)
     }
   }
+}
+
+fn parse_nested_line(
+  line: String,
+  acc: Dict(String, Dynamic),
+  current_section: option.Option(String),
+  rest: List(String),
+) -> Result(Dict(String, Dynamic), errors.ConfigError) {
+  use section <- result.try(require_section(current_section))
+  use parent <- result.try(get_section_dict(acc, section))
+  use #(key, value) <- result.try(parse_key_value(line))
+
+  let updated_parent = dict.insert(parent, key, dynamic.from(value))
+  let new_acc = dict.insert(acc, section, dynamic.from(updated_parent))
+  parse_yaml_lines(rest, new_acc, option.Some(section))
+}
+
+fn parse_key_value(line: String) -> Result(#(String, String), errors.ConfigError) {
+  case string.split_once(line, ":") {
+    Ok(#(key, value)) -> Ok(#(string.trim(key), string.trim(value)))
+    Error(_) -> Error(errors.ParseError(details: "Invalid YAML line: " <> line))
+  }
+}
+
+fn require_section(
+  current_section: option.Option(String),
+) -> Result(String, errors.ConfigError) {
+  case current_section {
+    option.Some(section) -> Ok(section)
+    option.None ->
+      Error(
+        errors.ParseError(
+          details: "Nested YAML value without a parent section",
+        ),
+      )
+  }
+}
+
+fn get_section_dict(
+  acc: Dict(String, Dynamic),
+  section: String,
+) -> Result(Dict(String, Dynamic), errors.ConfigError) {
+  case dict.get(acc, section) {
+    Ok(parent_dyn) -> {
+      let decoder = dynamic.dict(dynamic.string, dynamic.dynamic)
+      case decoder(parent_dyn) {
+        Ok(parent) -> Ok(parent)
+        Error(_) ->
+          Error(
+            errors.ParseError(
+              details: "Invalid nested structure for " <> section,
+            ),
+          )
+      }
+    }
+    Error(_) ->
+      Error(
+        errors.ParseError(
+          details: "Parent section not found: " <> section,
+        ),
+      )
+  }
+}
+
+fn is_indented(line: String) -> Bool {
+  string.starts_with(line, "  ") || string.starts_with(line, "\t")
+}
+
+fn is_section_start(line: String) -> Bool {
+  string.ends_with(line, ":") && !string.contains(line, ": ")
 }
 
 /// Find the closing --- delimiter

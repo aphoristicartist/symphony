@@ -1,6 +1,8 @@
 import gleam/option.{None, Some}
 import gleeunit
 import gleeunit/should
+import simplifile
+import symphony/config
 import symphony/errors
 import symphony/template
 import symphony/types
@@ -138,6 +140,95 @@ pub fn run_error_agent_message_test() {
     ),
   )
   |> should.equal("Agent protocol error at start_turn: invalid JSON-RPC payload")
+}
+
+// ============================================================================
+// Config Loading Tests
+// ============================================================================
+
+pub fn config_load_valid_nested_yaml_test() {
+  let path = "/tmp/symphony_gleam_workflow_valid.md"
+  let content =
+    "---\n"
+    <> "tracker:\n"
+    <> "  kind: linear\n"
+    <> "  api_key: test-key\n"
+    <> "  project_slug: CORE\n"
+    <> "polling:\n"
+    <> "  interval_ms: 1500\n"
+    <> "workspace:\n"
+    <> "  root: /tmp/symphony_ws\n"
+    <> "agent:\n"
+    <> "  max_concurrent_agents: 3\n"
+    <> "  max_turns: 9\n"
+    <> "codex:\n"
+    <> "  command: codex app-server\n"
+    <> "  turn_timeout_ms: 120000\n"
+    <> "prompt_template: Please implement {{ issue.identifier }}\n"
+    <> "---\n"
+    <> "Prompt body is ignored by current loader\n"
+
+  let assert Ok(Nil) = simplifile.write(to: path, contents: content)
+  let assert Ok(cfg) = config.load(path)
+
+  cfg.tracker.kind
+  |> should.equal("linear")
+
+  cfg.tracker.project_slug
+  |> should.equal("CORE")
+
+  cfg.workspace.root
+  |> should.equal("/tmp/symphony_ws")
+}
+
+pub fn config_load_nested_without_section_errors_test() {
+  let path = "/tmp/symphony_gleam_workflow_bad_nested.md"
+  let content =
+    "---\n"
+    <> "  kind: linear\n"
+    <> "prompt_template: hi\n"
+    <> "---\n"
+
+  let assert Ok(Nil) = simplifile.write(to: path, contents: content)
+
+  config.load(path)
+  |> should.equal(
+    Error(
+      errors.ParseError(details: "Nested YAML value without a parent section"),
+    ),
+  )
+}
+
+pub fn config_load_missing_tracker_api_key_test() {
+  let path = "/tmp/symphony_gleam_workflow_missing_key.md"
+  let content =
+    "---\n"
+    <> "tracker:\n"
+    <> "  kind: linear\n"
+    <> "  project_slug: CORE\n"
+    <> "polling:\n"
+    <> "  interval_ms: 1000\n"
+    <> "workspace:\n"
+    <> "  root: /tmp/symphony_ws\n"
+    <> "agent:\n"
+    <> "  max_concurrent_agents: 1\n"
+    <> "  max_turns: 2\n"
+    <> "codex:\n"
+    <> "  command: codex app-server\n"
+    <> "  turn_timeout_ms: 10000\n"
+    <> "prompt_template: hi\n"
+    <> "---\n"
+
+  let assert Ok(Nil) = simplifile.write(to: path, contents: content)
+
+  config.load(path)
+  |> should.equal(
+    Error(
+      errors.ValidationFailed(
+        error: errors.MissingRequiredField(field: "tracker.api_key"),
+      ),
+    ),
+  )
 }
 
 // ============================================================================

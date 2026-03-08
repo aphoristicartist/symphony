@@ -1,25 +1,20 @@
 import gleam/list
-import gleam/option.{None, Some, type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import symphony/config.{type Config}
 import symphony/errors.{
-  EmptyStateList,
-  InvalidIssueIdentifier,
-  InvalidSessionComponent,
-  MissingRequiredField,
-  NonPositiveValue,
-  OverlappingState,
-  UnsupportedValue,
-  type ValidationError,
+  type ValidationError, EmptyStateList, InvalidIssueIdentifier,
+  InvalidSessionComponent, MissingRequiredField, NonPositiveValue,
+  OverlappingState, UnsupportedValue,
 }
 
 const workspace_safe_chars = [
-  "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o",
-  "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "A", "B", "C", "D",
-  "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
-  "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7",
-  "8", "9", ".", "_", "-",
+  "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
+  "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "A", "B", "C", "D", "E", "F",
+  "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V",
+  "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "_",
+  "-",
 ]
 
 /// Check if a tracker state is currently active.
@@ -83,12 +78,14 @@ pub fn compose_session_id(
   thread_id: String,
   turn_id: String,
 ) -> Result(String, ValidationError) {
-  use normalized_thread_id <- result.try(
-    require_session_component("thread_id", thread_id),
-  )
-  use normalized_turn_id <- result.try(
-    require_session_component("turn_id", turn_id),
-  )
+  use normalized_thread_id <- result.try(require_session_component(
+    "thread_id",
+    thread_id,
+  ))
+  use normalized_turn_id <- result.try(require_session_component(
+    "turn_id",
+    turn_id,
+  ))
 
   Ok(normalized_thread_id <> "-" <> normalized_turn_id)
 }
@@ -96,23 +93,35 @@ pub fn compose_session_id(
 /// Validate config invariants required for dispatch.
 pub fn validate_config(config: Config) -> Result(Config, ValidationError) {
   use _ <- result.try(validate_tracker_kind(config.tracker.kind))
-  use _ <- result.try(require_non_empty("tracker.api_key", config.tracker.api_key))
+  use _ <- result.try(require_non_empty(
+    "tracker.api_key",
+    config.tracker.api_key,
+  ))
   use _ <- result.try(validate_project_slug(config))
   use _ <- result.try(validate_state_lists(config))
   use _ <- result.try(require_non_empty("codex.command", config.codex.command))
-  use _ <- result.try(validate_positive("polling.interval_ms", config.polling.interval_ms))
+  use _ <- result.try(validate_positive(
+    "polling.interval_ms",
+    config.polling.interval_ms,
+  ))
 
-  use _ <- result.try(
-    validate_positive(
-      "agent.max_concurrent_agents",
-      config.agent.max_concurrent_agents,
-    ),
-  )
+  use _ <- result.try(validate_positive(
+    "agent.max_concurrent_agents",
+    config.agent.max_concurrent_agents,
+  ))
 
-  use _ <- result.try(validate_positive("agent.max_turns", config.agent.max_turns))
-  use _ <- result.try(
-    validate_positive("codex.turn_timeout_ms", config.codex.turn_timeout_ms),
-  )
+  use _ <- result.try(validate_positive(
+    "agent.max_turns",
+    config.agent.max_turns,
+  ))
+  use _ <- result.try(validate_positive(
+    "codex.turn_timeout_ms",
+    config.codex.turn_timeout_ms,
+  ))
+  use _ <- result.try(validate_positive(
+    "hooks.timeout_ms",
+    config.hooks.timeout_ms,
+  ))
 
   Ok(config)
 }
@@ -134,13 +143,15 @@ fn validate_project_slug(config: Config) -> Result(Nil, ValidationError) {
 }
 
 fn validate_state_lists(config: Config) -> Result(Nil, ValidationError) {
-  use active <- result.try(
-    normalize_states("tracker.active_states", config.tracker.active_states),
-  )
+  use active <- result.try(normalize_states(
+    "tracker.active_states",
+    config.tracker.active_states,
+  ))
 
-  use terminal <- result.try(
-    normalize_states("tracker.terminal_states", config.tracker.terminal_states),
-  )
+  use terminal <- result.try(normalize_states(
+    "tracker.terminal_states",
+    config.tracker.terminal_states,
+  ))
 
   case find_overlap(active, terminal) {
     Some(overlap) -> Error(OverlappingState(state: overlap))
@@ -170,7 +181,10 @@ fn find_overlap(active: List(String), terminal: List(String)) -> Option(String) 
   }
 }
 
-fn require_non_empty(field: String, value: String) -> Result(Nil, ValidationError) {
+fn require_non_empty(
+  field: String,
+  value: String,
+) -> Result(Nil, ValidationError) {
   case string.trim(value) == "" {
     True -> Error(MissingRequiredField(field: field))
     False -> Ok(Nil)

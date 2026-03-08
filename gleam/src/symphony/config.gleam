@@ -30,20 +30,25 @@ pub type WorkspaceConfig {
   WorkspaceConfig(root: String)
 }
 
+/// Configuration for workspace lifecycle hooks
+pub type HooksConfig {
+  HooksConfig(
+    after_create: option.Option(String),
+    before_run: option.Option(String),
+    after_run: option.Option(String),
+    before_remove: option.Option(String),
+    timeout_ms: Int,
+  )
+}
+
 /// Configuration for agent behavior
 pub type AgentConfig {
-  AgentConfig(
-    max_concurrent_agents: Int,
-    max_turns: Int,
-  )
+  AgentConfig(max_concurrent_agents: Int, max_turns: Int)
 }
 
 /// Configuration for Codex integration
 pub type CodexConfig {
-  CodexConfig(
-    command: String,
-    turn_timeout_ms: Int,
-  )
+  CodexConfig(command: String, turn_timeout_ms: Int)
 }
 
 /// Complete configuration loaded from WORKFLOW.md
@@ -52,6 +57,7 @@ pub type Config {
     tracker: TrackerConfig,
     polling: PollingConfig,
     workspace: WorkspaceConfig,
+    hooks: HooksConfig,
     agent: AgentConfig,
     codex: CodexConfig,
     prompt_template: String,
@@ -86,11 +92,9 @@ fn parse_yaml_front_matter(
       }
     }
     _ ->
-      Error(
-        errors.ParseError(
-          details: "WORKFLOW.md must start with YAML front matter (---)",
-        ),
-      )
+      Error(errors.ParseError(
+        details: "WORKFLOW.md must start with YAML front matter (---)",
+      ))
   }
 }
 
@@ -115,13 +119,7 @@ fn parse_yaml_lines(
         True -> parse_yaml_lines(rest, acc, current_section)
         False -> {
           case is_indented(line) {
-            True ->
-              parse_nested_line(
-                trimmed,
-                acc,
-                current_section,
-                rest,
-              )
+            True -> parse_nested_line(trimmed, acc, current_section, rest)
             False -> parse_root_line(trimmed, acc, rest)
           }
         }
@@ -145,11 +143,9 @@ fn parse_root_line(
           case decoder(existing) {
             Ok(_) -> parse_yaml_lines(rest, acc, option.Some(section))
             Error(_) ->
-              Error(
-                errors.ParseError(
-                  details: "Section " <> section <> " must be a mapping",
-                ),
-              )
+              Error(errors.ParseError(
+                details: "Section " <> section <> " must be a mapping",
+              ))
           }
         }
         Error(_) -> {
@@ -181,7 +177,9 @@ fn parse_nested_line(
   parse_yaml_lines(rest, new_acc, option.Some(section))
 }
 
-fn parse_key_value(line: String) -> Result(#(String, String), errors.ConfigError) {
+fn parse_key_value(
+  line: String,
+) -> Result(#(String, String), errors.ConfigError) {
   case string.split_once(line, ":") {
     Ok(#(key, value)) -> Ok(#(string.trim(key), string.trim(value)))
     Error(_) -> Error(errors.ParseError(details: "Invalid YAML line: " <> line))
@@ -194,11 +192,9 @@ fn require_section(
   case current_section {
     option.Some(section) -> Ok(section)
     option.None ->
-      Error(
-        errors.ParseError(
-          details: "Nested YAML value without a parent section",
-        ),
-      )
+      Error(errors.ParseError(
+        details: "Nested YAML value without a parent section",
+      ))
   }
 }
 
@@ -212,19 +208,13 @@ fn get_section_dict(
       case decoder(parent_dyn) {
         Ok(parent) -> Ok(parent)
         Error(_) ->
-          Error(
-            errors.ParseError(
-              details: "Invalid nested structure for " <> section,
-            ),
-          )
+          Error(errors.ParseError(
+            details: "Invalid nested structure for " <> section,
+          ))
       }
     }
     Error(_) ->
-      Error(
-        errors.ParseError(
-          details: "Parent section not found: " <> section,
-        ),
-      )
+      Error(errors.ParseError(details: "Parent section not found: " <> section))
   }
 }
 
@@ -242,17 +232,23 @@ fn find_closing_delimiter(
   acc: List(String),
 ) -> Result(List(String), errors.ConfigError) {
   case lines {
-    [] -> Error(errors.ParseError(details: "YAML front matter not closed (missing ---)"))
-    ["---", .._] -> Ok(list.reverse(acc))
+    [] ->
+      Error(errors.ParseError(
+        details: "YAML front matter not closed (missing ---)",
+      ))
+    ["---", ..] -> Ok(list.reverse(acc))
     [line, ..rest] -> find_closing_delimiter(rest, [line, ..acc])
   }
 }
 
 /// Build Config from parsed YAML dictionary
-fn build_config(dict: Dict(String, Dynamic)) -> Result(Config, errors.ConfigError) {
+fn build_config(
+  dict: Dict(String, Dynamic),
+) -> Result(Config, errors.ConfigError) {
   use tracker <- result.try(build_tracker_config(dict))
   use polling <- result.try(build_polling_config(dict))
   use workspace <- result.try(build_workspace_config(dict))
+  use hooks <- result.try(build_hooks_config(dict))
   use agent <- result.try(build_agent_config(dict))
   use codex <- result.try(build_codex_config(dict))
   use prompt_template <- result.try(get_prompt_template(dict))
@@ -261,6 +257,7 @@ fn build_config(dict: Dict(String, Dynamic)) -> Result(Config, errors.ConfigErro
     tracker: tracker,
     polling: polling,
     workspace: workspace,
+    hooks: hooks,
     agent: agent,
     codex: codex,
     prompt_template: prompt_template,
@@ -273,23 +270,33 @@ fn build_tracker_config(
 ) -> Result(TrackerConfig, errors.ConfigError) {
   use tracker_dict <- result.try(get_dict(dict, "tracker"))
 
-  use kind <- result.try(get_string_required(tracker_dict, "kind", "tracker.kind"))
-  use api_key <- result.try(
-    get_string_with_env(tracker_dict, "api_key", "tracker.api_key"),
-  )
-  use project_slug <- result.try(
-    get_string_required(tracker_dict, "project_slug", "tracker.project_slug"),
-  )
-  let active_states = get_string_list_with_default(
+  use kind <- result.try(get_string_required(
     tracker_dict,
-    "active_states",
-    ["Todo", "In Progress", "In Review"],
-  )
-  let terminal_states = get_string_list_with_default(
+    "kind",
+    "tracker.kind",
+  ))
+  use api_key <- result.try(get_string_with_env(
     tracker_dict,
-    "terminal_states",
-    ["Done", "Canceled", "Duplicate"],
-  )
+    "api_key",
+    "tracker.api_key",
+  ))
+  use project_slug <- result.try(get_string_required(
+    tracker_dict,
+    "project_slug",
+    "tracker.project_slug",
+  ))
+  let active_states =
+    get_string_list_with_default(tracker_dict, "active_states", [
+      "Todo",
+      "In Progress",
+      "In Review",
+    ])
+  let terminal_states =
+    get_string_list_with_default(tracker_dict, "terminal_states", [
+      "Done",
+      "Canceled",
+      "Duplicate",
+    ])
 
   Ok(TrackerConfig(
     kind: kind,
@@ -306,7 +313,7 @@ fn build_polling_config(
 ) -> Result(PollingConfig, errors.ConfigError) {
   use polling_dict <- result.try(get_dict(dict, "polling"))
 
-  let interval_ms = get_int_with_default(polling_dict, "interval_ms", 30000)
+  let interval_ms = get_int_with_default(polling_dict, "interval_ms", 30_000)
 
   Ok(PollingConfig(interval_ms: interval_ms))
 }
@@ -317,13 +324,47 @@ fn build_workspace_config(
 ) -> Result(WorkspaceConfig, errors.ConfigError) {
   use workspace_dict <- result.try(get_dict(dict, "workspace"))
 
-  let root = get_string_with_default(
-    workspace_dict,
-    "root",
-    "/tmp/symphony_workspaces",
-  )
+  let root =
+    get_string_with_default(workspace_dict, "root", "/tmp/symphony_workspaces")
 
   Ok(WorkspaceConfig(root: root))
+}
+
+/// Build workspace hook configuration with defaults
+fn build_hooks_config(
+  dict: Dict(String, Dynamic),
+) -> Result(HooksConfig, errors.ConfigError) {
+  use hooks_dict <- result.try(get_optional_dict(dict, "hooks"))
+
+  use after_create <- result.try(get_optional_string(
+    hooks_dict,
+    "after_create",
+    "hooks.after_create",
+  ))
+  use before_run <- result.try(get_optional_string(
+    hooks_dict,
+    "before_run",
+    "hooks.before_run",
+  ))
+  use after_run <- result.try(get_optional_string(
+    hooks_dict,
+    "after_run",
+    "hooks.after_run",
+  ))
+  use before_remove <- result.try(get_optional_string(
+    hooks_dict,
+    "before_remove",
+    "hooks.before_remove",
+  ))
+  let timeout_ms = get_int_with_default(hooks_dict, "timeout_ms", 60_000)
+
+  Ok(HooksConfig(
+    after_create: after_create,
+    before_run: before_run,
+    after_run: after_run,
+    before_remove: before_remove,
+    timeout_ms: timeout_ms,
+  ))
 }
 
 /// Build agent configuration with defaults
@@ -332,11 +373,8 @@ fn build_agent_config(
 ) -> Result(AgentConfig, errors.ConfigError) {
   use agent_dict <- result.try(get_dict(dict, "agent"))
 
-  let max_concurrent_agents = get_int_with_default(
-    agent_dict,
-    "max_concurrent_agents",
-    10,
-  )
+  let max_concurrent_agents =
+    get_int_with_default(agent_dict, "max_concurrent_agents", 10)
   let max_turns = get_int_with_default(agent_dict, "max_turns", 20)
 
   Ok(AgentConfig(
@@ -351,14 +389,18 @@ fn build_codex_config(
 ) -> Result(CodexConfig, errors.ConfigError) {
   use codex_dict <- result.try(get_dict(dict, "codex"))
 
-  let command = get_string_with_default(codex_dict, "command", "codex app-server")
-  let turn_timeout_ms = get_int_with_default(codex_dict, "turn_timeout_ms", 3600000)
+  let command =
+    get_string_with_default(codex_dict, "command", "codex app-server")
+  let turn_timeout_ms =
+    get_int_with_default(codex_dict, "turn_timeout_ms", 3_600_000)
 
   Ok(CodexConfig(command: command, turn_timeout_ms: turn_timeout_ms))
 }
 
 /// Get prompt template (required)
-fn get_prompt_template(dict: Dict(String, Dynamic)) -> Result(String, errors.ConfigError) {
+fn get_prompt_template(
+  dict: Dict(String, Dynamic),
+) -> Result(String, errors.ConfigError) {
   get_string_required(dict, "prompt_template", "prompt_template")
 }
 
@@ -380,6 +422,23 @@ fn get_dict(
       }
     }
     Error(_) -> Error(config_validation_missing(key))
+  }
+}
+
+/// Get an optional nested dictionary from a parent dictionary
+fn get_optional_dict(
+  dict: Dict(String, Dynamic),
+  key: String,
+) -> Result(Dict(String, Dynamic), errors.ConfigError) {
+  case dict.get(dict, key) {
+    Ok(dyn) -> {
+      let decoder = dynamic.dict(dynamic.string, dynamic.dynamic)
+      case decoder(dyn) {
+        Ok(d) -> Ok(d)
+        Error(_) -> Error(config_validation_type(key, "mapping"))
+      }
+    }
+    Error(_) -> Ok(dict.new())
   }
 }
 
@@ -417,6 +476,25 @@ fn get_string_with_env(
   }
 }
 
+/// Get an optional string value
+fn get_optional_string(
+  dict: Dict(String, Dynamic),
+  key: String,
+  path: String,
+) -> Result(option.Option(String), errors.ConfigError) {
+  case dict.get(dict, key) {
+    Ok(dyn) -> {
+      case dynamic.string(dyn) {
+        Ok(s) ->
+          expand_env_vars(s)
+          |> result.map(fn(value) { option.Some(value) })
+        Error(_) -> Error(config_validation_type(path, "string"))
+      }
+    }
+    Error(_) -> Ok(option.None)
+  }
+}
+
 /// Get a string value with a default
 fn get_string_with_default(
   dict: Dict(String, Dynamic),
@@ -435,7 +513,11 @@ fn get_string_with_default(
 }
 
 /// Get an integer value with a default
-fn get_int_with_default(dict: Dict(String, Dynamic), key: String, default: Int) -> Int {
+fn get_int_with_default(
+  dict: Dict(String, Dynamic),
+  key: String,
+  default: Int,
+) -> Int {
   case dict.get(dict, key) {
     Ok(dyn) -> {
       case dynamic.int(dyn) {
@@ -482,16 +564,17 @@ fn expand_env_vars(s: String) -> Result(String, errors.ConfigError) {
     [] -> Ok(s)
     [first] -> Ok(first)
     [first, ..rest] -> {
-      use expanded <- result.try(
-        list.try_fold(rest, first, expand_single_var),
-      )
+      use expanded <- result.try(list.try_fold(rest, first, expand_single_var))
       Ok(expanded)
     }
   }
 }
 
 /// Expand a single variable reference
-fn expand_single_var(acc: String, part: String) -> Result(String, errors.ConfigError) {
+fn expand_single_var(
+  acc: String,
+  part: String,
+) -> Result(String, errors.ConfigError) {
   // Find the variable name (alphanumeric and underscore)
   let var_name_end = find_var_name_end(part, 0)
   let var_name = string.slice(part, 0, var_name_end)
@@ -548,13 +631,12 @@ fn expand_env_vars_or_default(s: String, default: String) -> String {
 }
 
 fn config_validation_missing(field: String) -> errors.ConfigError {
-  errors.ValidationFailed(
-    error: errors.MissingRequiredField(field: field),
-  )
+  errors.ValidationFailed(error: errors.MissingRequiredField(field: field))
 }
 
 fn config_validation_type(field: String, expected: String) -> errors.ConfigError {
-  errors.ValidationFailed(
-    error: errors.UnsupportedValue(field: field, value: expected),
-  )
+  errors.ValidationFailed(error: errors.UnsupportedValue(
+    field: field,
+    value: expected,
+  ))
 }

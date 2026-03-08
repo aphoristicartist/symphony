@@ -57,11 +57,12 @@ pub type RunAttemptPhase {
 
 /// Filesystem workspace assigned to one issue identifier.
 pub type Workspace {
-  Workspace(
-    path: String,
-    workspace_key: String,
-    created_now: Bool,
-  )
+  Workspace(path: String, workspace_key: String, created_now: Bool)
+}
+
+/// Result metadata for workspace cleanup attempts.
+pub type WorkspaceCleanup {
+  WorkspaceCleanup(path: String, workspace_key: String, removed_now: Bool)
 }
 
 /// One execution attempt for one issue.

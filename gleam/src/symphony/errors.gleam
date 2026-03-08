@@ -1,5 +1,5 @@
 import gleam/int
-import gleam/option.{None, Some, type Option}
+import gleam/option.{type Option, None, Some}
 
 /// Validation failures for typed config checks.
 pub type ValidationError {
@@ -35,6 +35,12 @@ pub type WorkspaceError {
     workspace_path: String,
     details: String,
     exit_code: Option(Int),
+  )
+  HookTimedOut(
+    hook: WorkspaceHook,
+    workspace_path: String,
+    timeout_ms: Int,
+    details: String,
   )
   CleanupFailed(path: String, workspace_key: String, details: String)
 }
@@ -87,7 +93,9 @@ pub fn validation_error_message(error: ValidationError) -> String {
     OverlappingState(state) ->
       "State cannot be both active and terminal: " <> state
     NonPositiveValue(field, value) ->
-      "Expected positive value for " <> field <> ", got: "
+      "Expected positive value for "
+      <> field
+      <> ", got: "
       <> int.to_string(value)
     InvalidIssueIdentifier(identifier) ->
       "Invalid issue identifier: " <> identifier
@@ -178,6 +186,15 @@ pub fn workspace_error_message(error: WorkspaceError) -> String {
       <> "): "
       <> details
     }
+    HookTimedOut(hook, workspace_path, timeout_ms, details) ->
+      "Workspace hook "
+      <> workspace_hook_name(hook)
+      <> " timed out in "
+      <> workspace_path
+      <> " after "
+      <> int.to_string(timeout_ms)
+      <> "ms: "
+      <> details
     CleanupFailed(path, workspace_key, details) ->
       "Workspace cleanup failed for "
       <> workspace_key
@@ -207,7 +224,8 @@ pub fn agent_error_message(error: AgentError) -> String {
       <> details
     ProtocolError(event, details) -> {
       case event {
-        Some(event_name) -> "Agent protocol error at " <> event_name <> ": " <> details
+        Some(event_name) ->
+          "Agent protocol error at " <> event_name <> ": " <> details
         None -> "Agent protocol error: " <> details
       }
     }

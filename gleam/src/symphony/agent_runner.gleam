@@ -21,22 +21,25 @@ pub fn run_issue(
     |> result.map_error(fn(error) { errors.WorkspaceFailure(error) }),
   )
 
-  // Step 2: Run before_run hook if configured
+  // Step 2: Run after_create hook for newly created workspace
+  use _ <- result.try(run_after_create_hook(config, workspace))
+
+  // Step 3: Run before_run hook if configured
   use _ <- result.try(run_before_hook(config, workspace.path))
 
-  // Step 3: Build prompt from template
+  // Step 4: Build prompt from template
   use prompt <- result.try(build_prompt(issue, config, attempt))
 
-  // Step 4: Start Codex thread
+  // Step 5: Start Codex thread
   use codex_process <- result.try(start_codex_thread(config, workspace.path))
 
-  // Step 5: Run turns until complete or max turns reached
+  // Step 6: Run turns until complete or max turns reached
   let result = run_turns(codex_process, prompt, config, issue, 0)
 
-  // Step 6: Run after_run hook
+  // Step 7: Run after_run hook
   let _ = run_after_hook(config, workspace.path)
 
-  // Step 7: Stop Codex process
+  // Step 8: Stop Codex process
   app_server.stop_thread(codex_process)
 
   result
@@ -52,28 +55,48 @@ fn ensure_issue_workspace(
 }
 
 /// Run before_run hook
-fn run_before_hook(config: Config, workspace_path: String) -> Result(Nil, errors.RunError) {
-  // For now, no hooks configured
-  // In production, this would read from config
-  workspace.run_hook(
-    "",
+fn run_before_hook(
+  config: Config,
+  workspace_path: String,
+) -> Result(Nil, errors.RunError) {
+  workspace.run_optional_hook(
+    config.hooks.before_run,
     workspace_path,
-    config.codex.turn_timeout_ms,
+    config.hooks.timeout_ms,
     errors.BeforeRun,
   )
   |> result.map_error(fn(error) { errors.WorkspaceFailure(error) })
 }
 
 /// Run after_run hook
-fn run_after_hook(config: Config, workspace_path: String) -> Result(Nil, errors.RunError) {
-  // For now, no hooks configured
-  // In production, this would read from config
-  workspace.run_hook(
-    "",
+fn run_after_hook(
+  config: Config,
+  workspace_path: String,
+) -> Result(Nil, errors.RunError) {
+  workspace.run_optional_hook(
+    config.hooks.after_run,
     workspace_path,
-    config.codex.turn_timeout_ms,
+    config.hooks.timeout_ms,
     errors.AfterRun,
   )
+  |> result.map_error(fn(error) { errors.WorkspaceFailure(error) })
+}
+
+/// Run after_create hook only when a workspace directory is newly created
+fn run_after_create_hook(
+  config: Config,
+  issue_workspace: types.Workspace,
+) -> Result(Nil, errors.RunError) {
+  case issue_workspace.created_now {
+    True ->
+      workspace.run_optional_hook(
+        config.hooks.after_create,
+        issue_workspace.path,
+        config.hooks.timeout_ms,
+        errors.AfterCreate,
+      )
+    False -> Ok(Nil)
+  }
   |> result.map_error(fn(error) { errors.WorkspaceFailure(error) })
 }
 
@@ -86,12 +109,10 @@ fn build_prompt(
   let context = template.context_from_issue(issue, attempt)
   template.render(config.prompt_template, context)
   |> result.map_error(fn(error) {
-    errors.AgentFailure(
-      errors.ProtocolError(
-        event: option.Some("prompt_template"),
-        details: errors.validation_error_message(error),
-      ),
-    )
+    errors.AgentFailure(errors.ProtocolError(
+      event: option.Some("prompt_template"),
+      details: errors.validation_error_message(error),
+    ))
   })
 }
 
@@ -101,9 +122,7 @@ fn start_codex_thread(
   workspace_path: String,
 ) -> Result(CodexProcess, errors.RunError) {
   app_server.start_thread(config.codex.command, workspace_path)
-  |> result.map_error(fn(error) {
-    errors.AgentFailure(error)
-  })
+  |> result.map_error(fn(error) { errors.AgentFailure(error) })
 }
 
 /// Run turns until completion or max turns
@@ -121,9 +140,7 @@ fn run_turns(
       // Start a turn
       use _ <- result.try(
         app_server.start_turn(codex_process, prompt)
-        |> result.map_error(fn(error) {
-          errors.AgentFailure(error)
-        }),
+        |> result.map_error(fn(error) { errors.AgentFailure(error) }),
       )
 
       // Stream events and track completion
@@ -160,17 +177,16 @@ fn stream_turn_events(
         let _ = process.send(result, Ok(types.Succeeded))
       }
       app_server.ProcessError(message) -> {
-        let _ = process.send(
-          result,
-          Error(
-            errors.AgentFailure(
-              errors.ProtocolError(
+        let _ =
+          process.send(
+            result,
+            Error(
+              errors.AgentFailure(errors.ProtocolError(
                 event: option.Some("process_event"),
                 details: message,
-              ),
+              )),
             ),
-          ),
-        )
+          )
       }
       _ -> Nil
     }

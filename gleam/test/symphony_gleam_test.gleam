@@ -1,4 +1,5 @@
 import gleam/option.{None, Some}
+import gleam/string
 import gleeunit
 import gleeunit/should
 import simplifile
@@ -47,6 +48,87 @@ pub fn workspace_key_preserves_dots_test() {
   |> should.equal("v1.2.3")
 }
 
+pub fn workspace_run_hook_success_test() {
+  let hook_dir = "/tmp/symphony_gleam_hook_success"
+  let assert Ok(_) = simplifile.create_directory_all(hook_dir)
+
+  workspace.run_hook("printf ok", hook_dir, 2000, errors.BeforeRun)
+  |> should.equal(Ok(Nil))
+}
+
+pub fn workspace_run_hook_non_zero_exit_test() {
+  let hook_dir = "/tmp/symphony_gleam_hook_fail"
+  let assert Ok(_) = simplifile.create_directory_all(hook_dir)
+
+  let assert Error(errors.HookFailed(
+    hook: errors.BeforeRun,
+    workspace_path: workspace_path,
+    details: details,
+    exit_code: Some(exit_code),
+  )) =
+    workspace.run_hook("echo boom && exit 7", hook_dir, 2000, errors.BeforeRun)
+
+  workspace_path
+  |> should.equal(hook_dir)
+
+  exit_code
+  |> should.equal(7)
+
+  string.contains(details, "boom")
+  |> should.equal(True)
+}
+
+pub fn workspace_run_hook_timeout_test() {
+  let hook_dir = "/tmp/symphony_gleam_hook_timeout"
+  let assert Ok(_) = simplifile.create_directory_all(hook_dir)
+
+  let assert Error(errors.HookTimedOut(
+    hook: errors.AfterRun,
+    workspace_path: workspace_path,
+    timeout_ms: timeout_ms,
+    details: _details,
+  )) = workspace.run_hook("while :; do :; done", hook_dir, 20, errors.AfterRun)
+
+  workspace_path
+  |> should.equal(hook_dir)
+
+  timeout_ms
+  |> should.equal(20)
+}
+
+pub fn workspace_remove_workspace_metadata_test() {
+  let root = "/tmp/symphony_gleam_remove_root"
+  let key = "TEST_REMOVE_OK"
+  let path = root <> "/" <> key
+
+  let assert Ok(_) = simplifile.create_directory_all(path)
+
+  let assert Ok(cleanup) = workspace.remove_workspace(root, key, None, 1000)
+
+  cleanup.path
+  |> should.equal(path)
+
+  cleanup.workspace_key
+  |> should.equal(key)
+
+  cleanup.removed_now
+  |> should.equal(True)
+}
+
+pub fn workspace_remove_workspace_cleanup_failure_test() {
+  let assert Error(errors.CleanupFailed(
+    path: path,
+    workspace_key: workspace_key,
+    details: _details,
+  )) = workspace.remove_workspace("/dev/null", "blocked", None, 1000)
+
+  path
+  |> should.equal("/dev/null/blocked")
+
+  workspace_key
+  |> should.equal("blocked")
+}
+
 // ============================================================================
 // Validation Tests
 // ============================================================================
@@ -81,9 +163,9 @@ pub fn config_error_missing_file_message_test() {
 
 pub fn config_error_validation_message_test() {
   errors.config_error_message(
-    errors.ValidationFailed(
-      error: errors.MissingRequiredField(field: "tracker.api_key"),
-    ),
+    errors.ValidationFailed(error: errors.MissingRequiredField(
+      field: "tracker.api_key",
+    )),
   )
   |> should.equal(
     "Configuration validation failed: Missing required field: tracker.api_key",
@@ -91,55 +173,61 @@ pub fn config_error_validation_message_test() {
 }
 
 pub fn tracker_error_api_message_test() {
-  errors.tracker_error_message(
-    errors.ApiError(
-      operation: "fetch_active_issues",
-      details: "HTTP request failed",
-      status_code: Some(500),
-    ),
-  )
+  errors.tracker_error_message(errors.ApiError(
+    operation: "fetch_active_issues",
+    details: "HTTP request failed",
+    status_code: Some(500),
+  ))
   |> should.equal(
     "Tracker API error in fetch_active_issues (status 500): HTTP request failed",
   )
 }
 
 pub fn tracker_error_not_found_message_test() {
-  errors.tracker_error_message(
-    errors.NotFound(
-      resource: "issue",
-      identifier: Some("ISSUE-123"),
-      details: "State payload missing",
-    ),
-  )
+  errors.tracker_error_message(errors.NotFound(
+    resource: "issue",
+    identifier: Some("ISSUE-123"),
+    details: "State payload missing",
+  ))
   |> should.equal(
     "Tracker resource not found: issue (ISSUE-123) - State payload missing",
   )
 }
 
 pub fn workspace_error_hook_message_test() {
-  errors.workspace_error_message(
-    errors.HookFailed(
-      hook: errors.BeforeRun,
-      workspace_path: "/tmp/workspace",
-      details: "script exited non-zero",
-      exit_code: Some(2),
-    ),
-  )
+  errors.workspace_error_message(errors.HookFailed(
+    hook: errors.BeforeRun,
+    workspace_path: "/tmp/workspace",
+    details: "script exited non-zero",
+    exit_code: Some(2),
+  ))
   |> should.equal(
     "Workspace hook before_run failed in /tmp/workspace (exit: 2): script exited non-zero",
   )
 }
 
+pub fn workspace_error_timeout_message_test() {
+  errors.workspace_error_message(errors.HookTimedOut(
+    hook: errors.AfterRun,
+    workspace_path: "/tmp/workspace",
+    timeout_ms: 50,
+    details: "no command output",
+  ))
+  |> should.equal(
+    "Workspace hook after_run timed out in /tmp/workspace after 50ms: no command output",
+  )
+}
+
 pub fn run_error_agent_message_test() {
   errors.run_error_message(
-    errors.AgentFailure(
-      errors.ProtocolError(
-        event: Some("start_turn"),
-        details: "invalid JSON-RPC payload",
-      ),
-    ),
+    errors.AgentFailure(errors.ProtocolError(
+      event: Some("start_turn"),
+      details: "invalid JSON-RPC payload",
+    )),
   )
-  |> should.equal("Agent protocol error at start_turn: invalid JSON-RPC payload")
+  |> should.equal(
+    "Agent protocol error at start_turn: invalid JSON-RPC payload",
+  )
 }
 
 // ============================================================================
@@ -179,23 +267,23 @@ pub fn config_load_valid_nested_yaml_test() {
 
   cfg.workspace.root
   |> should.equal("/tmp/symphony_ws")
+
+  cfg.hooks.timeout_ms
+  |> should.equal(60_000)
 }
 
 pub fn config_load_nested_without_section_errors_test() {
   let path = "/tmp/symphony_gleam_workflow_bad_nested.md"
   let content =
-    "---\n"
-    <> "  kind: linear\n"
-    <> "prompt_template: hi\n"
-    <> "---\n"
+    "---\n" <> "  kind: linear\n" <> "prompt_template: hi\n" <> "---\n"
 
   let assert Ok(Nil) = simplifile.write(to: path, contents: content)
 
   config.load(path)
   |> should.equal(
-    Error(
-      errors.ParseError(details: "Nested YAML value without a parent section"),
-    ),
+    Error(errors.ParseError(
+      details: "Nested YAML value without a parent section",
+    )),
   )
 }
 
@@ -224,11 +312,49 @@ pub fn config_load_missing_tracker_api_key_test() {
   config.load(path)
   |> should.equal(
     Error(
-      errors.ValidationFailed(
-        error: errors.MissingRequiredField(field: "tracker.api_key"),
-      ),
+      errors.ValidationFailed(error: errors.MissingRequiredField(
+        field: "tracker.api_key",
+      )),
     ),
   )
+}
+
+pub fn config_load_hooks_config_test() {
+  let path = "/tmp/symphony_gleam_workflow_hooks.md"
+  let content =
+    "---\n"
+    <> "tracker:\n"
+    <> "  kind: linear\n"
+    <> "  api_key: test-key\n"
+    <> "  project_slug: CORE\n"
+    <> "polling:\n"
+    <> "  interval_ms: 1000\n"
+    <> "workspace:\n"
+    <> "  root: /tmp/symphony_ws\n"
+    <> "hooks:\n"
+    <> "  before_run: echo before\n"
+    <> "  after_run: echo after\n"
+    <> "  timeout_ms: 2500\n"
+    <> "agent:\n"
+    <> "  max_concurrent_agents: 1\n"
+    <> "  max_turns: 2\n"
+    <> "codex:\n"
+    <> "  command: codex app-server\n"
+    <> "  turn_timeout_ms: 10000\n"
+    <> "prompt_template: hi\n"
+    <> "---\n"
+
+  let assert Ok(Nil) = simplifile.write(to: path, contents: content)
+  let assert Ok(cfg) = config.load(path)
+
+  cfg.hooks.before_run
+  |> should.equal(Some("echo before"))
+
+  cfg.hooks.after_run
+  |> should.equal(Some("echo after"))
+
+  cfg.hooks.timeout_ms
+  |> should.equal(2500)
 }
 
 // ============================================================================
@@ -236,20 +362,21 @@ pub fn config_load_missing_tracker_api_key_test() {
 // ============================================================================
 
 pub fn template_renders_issue_identifier_test() {
-  let issue = types.Issue(
-    id: "123",
-    identifier: "TEST-1",
-    title: "Test Issue",
-    description: None,
-    state: "Todo",
-    priority: Some(1),
-    branch_name: None,
-    url: None,
-    labels: [],
-    blocked_by: [],
-    created_at: None,
-    updated_at: None,
-  )
+  let issue =
+    types.Issue(
+      id: "123",
+      identifier: "TEST-1",
+      title: "Test Issue",
+      description: None,
+      state: "Todo",
+      priority: Some(1),
+      branch_name: None,
+      url: None,
+      labels: [],
+      blocked_by: [],
+      created_at: None,
+      updated_at: None,
+    )
 
   let context = template.context_from_issue(issue, 1)
 
@@ -258,20 +385,21 @@ pub fn template_renders_issue_identifier_test() {
 }
 
 pub fn template_renders_issue_title_test() {
-  let issue = types.Issue(
-    id: "123",
-    identifier: "TEST-1",
-    title: "Test Issue",
-    description: None,
-    state: "Todo",
-    priority: Some(1),
-    branch_name: None,
-    url: None,
-    labels: [],
-    blocked_by: [],
-    created_at: None,
-    updated_at: None,
-  )
+  let issue =
+    types.Issue(
+      id: "123",
+      identifier: "TEST-1",
+      title: "Test Issue",
+      description: None,
+      state: "Todo",
+      priority: Some(1),
+      branch_name: None,
+      url: None,
+      labels: [],
+      blocked_by: [],
+      created_at: None,
+      updated_at: None,
+    )
 
   let context = template.context_from_issue(issue, 1)
 
@@ -280,20 +408,21 @@ pub fn template_renders_issue_title_test() {
 }
 
 pub fn template_renders_attempt_test() {
-  let issue = types.Issue(
-    id: "123",
-    identifier: "TEST-1",
-    title: "Test Issue",
-    description: None,
-    state: "Todo",
-    priority: Some(1),
-    branch_name: None,
-    url: None,
-    labels: [],
-    blocked_by: [],
-    created_at: None,
-    updated_at: None,
-  )
+  let issue =
+    types.Issue(
+      id: "123",
+      identifier: "TEST-1",
+      title: "Test Issue",
+      description: None,
+      state: "Todo",
+      priority: Some(1),
+      branch_name: None,
+      url: None,
+      labels: [],
+      blocked_by: [],
+      created_at: None,
+      updated_at: None,
+    )
 
   let context = template.context_from_issue(issue, 3)
 
@@ -302,20 +431,21 @@ pub fn template_renders_attempt_test() {
 }
 
 pub fn template_renders_multiple_variables_test() {
-  let issue = types.Issue(
-    id: "123",
-    identifier: "TEST-1",
-    title: "Test Issue",
-    description: None,
-    state: "Todo",
-    priority: Some(1),
-    branch_name: None,
-    url: None,
-    labels: [],
-    blocked_by: [],
-    created_at: None,
-    updated_at: None,
-  )
+  let issue =
+    types.Issue(
+      id: "123",
+      identifier: "TEST-1",
+      title: "Test Issue",
+      description: None,
+      state: "Todo",
+      priority: Some(1),
+      branch_name: None,
+      url: None,
+      labels: [],
+      blocked_by: [],
+      created_at: None,
+      updated_at: None,
+    )
 
   let context = template.context_from_issue(issue, 2)
 
@@ -327,20 +457,21 @@ pub fn template_renders_multiple_variables_test() {
 }
 
 pub fn template_handles_unknown_variable_test() {
-  let issue = types.Issue(
-    id: "123",
-    identifier: "TEST-1",
-    title: "Test Issue",
-    description: None,
-    state: "Todo",
-    priority: Some(1),
-    branch_name: None,
-    url: None,
-    labels: [],
-    blocked_by: [],
-    created_at: None,
-    updated_at: None,
-  )
+  let issue =
+    types.Issue(
+      id: "123",
+      identifier: "TEST-1",
+      title: "Test Issue",
+      description: None,
+      state: "Todo",
+      priority: Some(1),
+      branch_name: None,
+      url: None,
+      labels: [],
+      blocked_by: [],
+      created_at: None,
+      updated_at: None,
+    )
 
   let context = template.context_from_issue(issue, 1)
 
@@ -397,40 +528,42 @@ pub fn run_attempt_phase_timed_out_exists_test() {
 // ============================================================================
 
 pub fn issue_can_be_created_with_all_fields_test() {
-  let issue = types.Issue(
-    id: "123",
-    identifier: "TEST-1",
-    title: "Test Issue",
-    description: Some("Description"),
-    state: "Todo",
-    priority: Some(1),
-    branch_name: Some("feature/test"),
-    url: Some("https://example.com"),
-    labels: ["bug", "urgent"],
-    blocked_by: [],
-    created_at: Some(1234567890),
-    updated_at: Some(1234567900),
-  )
+  let issue =
+    types.Issue(
+      id: "123",
+      identifier: "TEST-1",
+      title: "Test Issue",
+      description: Some("Description"),
+      state: "Todo",
+      priority: Some(1),
+      branch_name: Some("feature/test"),
+      url: Some("https://example.com"),
+      labels: ["bug", "urgent"],
+      blocked_by: [],
+      created_at: Some(1_234_567_890),
+      updated_at: Some(1_234_567_900),
+    )
 
   issue.identifier
   |> should.equal("TEST-1")
 }
 
 pub fn issue_can_be_created_with_minimal_fields_test() {
-  let issue = types.Issue(
-    id: "123",
-    identifier: "TEST-1",
-    title: "Test Issue",
-    description: None,
-    state: "Todo",
-    priority: None,
-    branch_name: None,
-    url: None,
-    labels: [],
-    blocked_by: [],
-    created_at: None,
-    updated_at: None,
-  )
+  let issue =
+    types.Issue(
+      id: "123",
+      identifier: "TEST-1",
+      title: "Test Issue",
+      description: None,
+      state: "Todo",
+      priority: None,
+      branch_name: None,
+      url: None,
+      labels: [],
+      blocked_by: [],
+      created_at: None,
+      updated_at: None,
+    )
 
   issue.identifier
   |> should.equal("TEST-1")

@@ -23,6 +23,7 @@ fn tracker_active_states(tracker: config.TrackerConfig) -> List(String) {
   case tracker {
     config.LinearConfig(active_states: s, ..) -> s
     config.PlaneConfig(active_states: s, ..) -> s
+    config.LocalConfig(active_states: s, ..) -> s
   }
 }
 
@@ -31,14 +32,17 @@ fn tracker_terminal_states(tracker: config.TrackerConfig) -> List(String) {
   case tracker {
     config.LinearConfig(terminal_states: s, ..) -> s
     config.PlaneConfig(terminal_states: s, ..) -> s
+    config.LocalConfig(terminal_states: s, ..) -> s
   }
 }
 
 /// Extract api_key from a TrackerConfig union variant.
+/// Returns an empty string for trackers that don't use API keys (e.g. local).
 pub fn tracker_api_key(tracker: config.TrackerConfig) -> String {
   case tracker {
     config.LinearConfig(api_key: k, ..) -> k
     config.PlaneConfig(api_key: k, ..) -> k
+    config.LocalConfig(..) -> ""
   }
 }
 
@@ -47,6 +51,15 @@ pub fn is_active_state(state: String, config: Config) -> Bool {
   let normalized = normalize_state(state)
 
   tracker_active_states(config.tracker)
+  |> list.any(fn(candidate) { normalize_state(candidate) == normalized })
+}
+
+/// Check if a state is in a given list of active states.
+/// Used by adapters that carry their active_states list directly.
+pub fn is_active_state_list(state: String, active_states: List(String)) -> Bool {
+  let normalized = normalize_state(state)
+
+  active_states
   |> list.any(fn(candidate) { normalize_state(candidate) == normalized })
 }
 
@@ -143,6 +156,7 @@ pub fn parse_tracker_kind(
   case normalize_state(kind) {
     "linear" -> Ok(types.Linear)
     "plane" -> Ok(types.Plane)
+    "local" -> Ok(types.LocalTracker)
     _ -> Error(UnsupportedValue(field: "tracker.kind", value: kind))
   }
 }
@@ -197,6 +211,8 @@ fn validate_tracker(
       use _ <- result.try(require_non_empty("tracker.workspace_slug", ws))
       require_non_empty("tracker.project_id", pid)
     }
+    config.LocalConfig(issues_dir: dir, ..) ->
+      require_non_empty("tracker.issues_dir", dir)
   }
 }
 

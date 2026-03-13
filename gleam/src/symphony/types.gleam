@@ -95,6 +95,7 @@ pub type AgentAdapter {
 pub type TrackerKind {
   Linear
   Plane
+  LocalTracker
 }
 
 /// Record-of-functions adapter for issue tracker backends.

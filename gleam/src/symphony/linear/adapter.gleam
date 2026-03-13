@@ -102,6 +102,7 @@ fn linear_api_key(config: Config) -> String {
   case config.tracker {
     config.LinearConfig(api_key: k, ..) -> k
     config.PlaneConfig(api_key: k, ..) -> k
+    config.LocalConfig(..) -> ""
   }
 }
 

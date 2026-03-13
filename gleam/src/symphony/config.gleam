@@ -9,7 +9,7 @@ import gleam/string
 import simplifile
 import symphony/errors
 
-/// Configuration for the issue tracker (Linear or Plane).
+/// Configuration for the issue tracker (Linear, Plane, or Local).
 /// Variants enforce which fields are present for each backend.
 pub type TrackerConfig {
   LinearConfig(
@@ -23,6 +23,11 @@ pub type TrackerConfig {
     endpoint: String,
     workspace_slug: String,
     project_id: String,
+    active_states: List(String),
+    terminal_states: List(String),
+  )
+  LocalConfig(
+    issues_dir: String,
     active_states: List(String),
     terminal_states: List(String),
   )
@@ -293,11 +298,6 @@ fn build_tracker_config(
     "kind",
     "tracker.kind",
   ))
-  use api_key <- result.try(get_string_with_env(
-    tracker_dict,
-    "api_key",
-    "tracker.api_key",
-  ))
   let active_states =
     get_string_list_with_default(tracker_dict, "active_states", [
       "Todo",
@@ -312,14 +312,34 @@ fn build_tracker_config(
     ])
 
   case string.lowercase(string.trim(kind)) {
-    "plane" ->
+    "local" -> {
+      let issues_dir =
+        get_string_with_default(tracker_dict, "issues_dir", "./issues")
+      Ok(LocalConfig(
+        issues_dir: issues_dir,
+        active_states: active_states,
+        terminal_states: terminal_states,
+      ))
+    }
+    "plane" -> {
+      use api_key <- result.try(get_string_with_env(
+        tracker_dict,
+        "api_key",
+        "tracker.api_key",
+      ))
       build_plane_tracker_config(
         tracker_dict,
         api_key,
         active_states,
         terminal_states,
       )
+    }
     _ -> {
+      use api_key <- result.try(get_string_with_env(
+        tracker_dict,
+        "api_key",
+        "tracker.api_key",
+      ))
       let project_slug =
         get_string_with_default(tracker_dict, "project_slug", "")
       Ok(LinearConfig(

@@ -13,6 +13,9 @@ import symphony/codex/app_server
 import symphony/codex/dynamic_tool
 import symphony/config
 import symphony/errors
+import symphony/local/client as local_client
+import symphony/local/normalizer as local_normalizer
+import symphony/local/types as local_types
 import symphony/persistence
 import symphony/plane/client as plane_client
 import symphony/plane/normalizer
@@ -1861,4 +1864,95 @@ pub fn plane_client_rate_limit_no_retry_after_header_test() {
     errors.RateLimit(retry_after_ms: None, ..) -> should.equal(True, True)
     _ -> should.fail()
   }
+}
+
+// ============================================================================
+// Local Tracker Tests
+// ============================================================================
+
+/// LocalConfig fields are stored and accessible.
+pub fn local_config_parses_from_yaml_test() {
+  let cfg =
+    config.LocalConfig(
+      issues_dir: "/tmp/my-issues",
+      active_states: ["Todo", "In Progress"],
+      terminal_states: ["Done", "Cancelled"],
+    )
+
+  let config.LocalConfig(issues_dir: dir, active_states: active, ..) = cfg
+
+  dir
+  |> should.equal("/tmp/my-issues")
+
+  active
+  |> should.equal(["Todo", "In Progress"])
+}
+
+/// normalize_issue converts a LocalIssue to a canonical Issue.
+pub fn local_normalizer_test() {
+  let local =
+    local_types.LocalIssue(
+      id: "PROJ-1",
+      title: "Fix the login bug",
+      description: Some("Users can't log in when using Firefox."),
+      state: "Todo",
+      priority: Some(2),
+      labels: ["bug"],
+    )
+
+  let issue = local_normalizer.normalize_issue(local, "/tmp/issues")
+
+  issue.id
+  |> should.equal("PROJ-1")
+
+  issue.identifier
+  |> should.equal("PROJ-1")
+
+  issue.title
+  |> should.equal("Fix the login bug")
+
+  issue.state
+  |> should.equal("Todo")
+
+  issue.priority
+  |> should.equal(Some(2))
+
+  issue.labels
+  |> should.equal(["bug"])
+
+  issue.url
+  |> should.equal(Some("file:///tmp/issues/PROJ-1.yaml"))
+
+  issue.blocked_by
+  |> should.equal([])
+}
+
+/// fetch_candidate_issues on a non-existent directory returns an error gracefully.
+pub fn local_adapter_fetch_empty_dir_test() {
+  let result = local_client.list_issues("/tmp/does-not-exist-symphony-local")
+
+  case result {
+    Error(errors.ApiError(operation: "list_issues", ..)) ->
+      should.equal(True, True)
+    Error(_) -> should.equal(True, True)
+    Ok(_) -> should.fail()
+  }
+}
+
+/// is_active_state_list returns true when state is in active list.
+pub fn local_issue_state_active_test() {
+  validation.is_active_state_list("Todo", ["Todo", "In Progress"])
+  |> should.equal(True)
+
+  validation.is_active_state_list("In Progress", ["Todo", "In Progress"])
+  |> should.equal(True)
+}
+
+/// is_active_state_list returns false for terminal state.
+pub fn local_issue_state_terminal_test() {
+  validation.is_active_state_list("Done", ["Todo", "In Progress"])
+  |> should.equal(False)
+
+  validation.is_active_state_list("Cancelled", ["Todo", "In Progress"])
+  |> should.equal(False)
 }

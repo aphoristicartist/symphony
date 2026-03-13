@@ -14,12 +14,21 @@ import symphony/types.{type BlockerRef, type Issue, BlockerRef, Issue}
 /// Linear GraphQL API endpoint
 const linear_api_url = "https://api.linear.app/graphql"
 
+/// Extract Linear-specific fields from TrackerConfig.
+fn linear_fields(config: Config) -> #(String, String) {
+  case config.tracker {
+    config.LinearConfig(api_key: k, project_slug: slug, ..) -> #(k, slug)
+    config.PlaneConfig(api_key: k, ..) -> #(k, "")
+  }
+}
+
 /// Fetch active issues from Linear
 pub fn fetch_active_issues(
   config: Config,
 ) -> Result(List(Issue), errors.TrackerError) {
-  let query = build_active_issues_query(config.tracker.project_slug)
-  let req = build_graphql_request(config.tracker.api_key, query)
+  let #(api_key, project_slug) = linear_fields(config)
+  let query = build_active_issues_query(project_slug)
+  let req = build_graphql_request(api_key, query)
 
   use response <- result.try(
     httpc.send(req)
@@ -41,8 +50,9 @@ pub fn fetch_issue_state(
   config: Config,
   issue_id: String,
 ) -> Result(String, errors.TrackerError) {
+  let #(api_key, _) = linear_fields(config)
   let query = build_issue_state_query(issue_id)
-  let req = build_graphql_request(config.tracker.api_key, query)
+  let req = build_graphql_request(api_key, query)
 
   use response <- result.try(
     httpc.send(req)

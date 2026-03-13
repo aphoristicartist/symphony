@@ -18,11 +18,35 @@ const workspace_safe_chars = [
   "-",
 ]
 
+/// Extract active_states from a TrackerConfig union variant.
+fn tracker_active_states(tracker: config.TrackerConfig) -> List(String) {
+  case tracker {
+    config.LinearConfig(active_states: s, ..) -> s
+    config.PlaneConfig(active_states: s, ..) -> s
+  }
+}
+
+/// Extract terminal_states from a TrackerConfig union variant.
+fn tracker_terminal_states(tracker: config.TrackerConfig) -> List(String) {
+  case tracker {
+    config.LinearConfig(terminal_states: s, ..) -> s
+    config.PlaneConfig(terminal_states: s, ..) -> s
+  }
+}
+
+/// Extract api_key from a TrackerConfig union variant.
+pub fn tracker_api_key(tracker: config.TrackerConfig) -> String {
+  case tracker {
+    config.LinearConfig(api_key: k, ..) -> k
+    config.PlaneConfig(api_key: k, ..) -> k
+  }
+}
+
 /// Check if a tracker state is currently active.
 pub fn is_active_state(state: String, config: Config) -> Bool {
   let normalized = normalize_state(state)
 
-  config.tracker.active_states
+  tracker_active_states(config.tracker)
   |> list.any(fn(candidate) { normalize_state(candidate) == normalized })
 }
 
@@ -30,7 +54,7 @@ pub fn is_active_state(state: String, config: Config) -> Bool {
 pub fn is_terminal_state(state: String, config: Config) -> Bool {
   let normalized = normalize_state(state)
 
-  config.tracker.terminal_states
+  tracker_terminal_states(config.tracker)
   |> list.any(fn(candidate) { normalize_state(candidate) == normalized })
 }
 
@@ -124,12 +148,7 @@ pub fn parse_tracker_kind(
 }
 
 pub fn validate_config(config: Config) -> Result(Config, ValidationError) {
-  use _ <- result.try(validate_tracker_kind(config.tracker.kind))
-  use _ <- result.try(require_non_empty(
-    "tracker.api_key",
-    config.tracker.api_key,
-  ))
-  use _ <- result.try(validate_project_slug(config))
+  use _ <- result.try(validate_tracker(config.tracker))
   use _ <- result.try(validate_state_lists(config))
   use _ <- result.try(validate_agent_kind(config.agent.kind))
   use _ <- result.try(validate_positive(
@@ -158,46 +177,38 @@ pub fn validate_config(config: Config) -> Result(Config, ValidationError) {
   Ok(config)
 }
 
-fn validate_tracker_kind(kind: String) -> Result(Nil, ValidationError) {
-  case normalize_state(kind) {
-    "linear" | "plane" -> Ok(Nil)
-    _ -> Error(UnsupportedValue(field: "tracker.kind", value: kind))
-  }
-}
-
-fn validate_project_slug(config: Config) -> Result(Nil, ValidationError) {
-  case normalize_state(config.tracker.kind) {
-    "linear" ->
-      require_non_empty("tracker.project_slug", config.tracker.project_slug)
-    "plane" -> validate_plane_config(config)
-    _ -> Ok(Nil)
-  }
-}
-
-fn validate_plane_config(config: Config) -> Result(Nil, ValidationError) {
-  use _ <- result.try(case config.tracker.endpoint {
-    option.Some(endpoint) -> require_non_empty("tracker.endpoint", endpoint)
-    option.None -> Error(MissingRequiredField(field: "tracker.endpoint"))
-  })
-  use _ <- result.try(case config.tracker.workspace_slug {
-    option.Some(slug) -> require_non_empty("tracker.workspace_slug", slug)
-    option.None -> Error(MissingRequiredField(field: "tracker.workspace_slug"))
-  })
-  case config.tracker.project_id {
-    option.Some(id) -> require_non_empty("tracker.project_id", id)
-    option.None -> Error(MissingRequiredField(field: "tracker.project_id"))
+fn validate_tracker(
+  tracker: config.TrackerConfig,
+) -> Result(Nil, ValidationError) {
+  case tracker {
+    config.LinearConfig(api_key: k, project_slug: slug, ..) -> {
+      use _ <- result.try(require_non_empty("tracker.api_key", k))
+      require_non_empty("tracker.project_slug", slug)
+    }
+    config.PlaneConfig(
+      api_key: k,
+      endpoint: ep,
+      workspace_slug: ws,
+      project_id: pid,
+      ..,
+    ) -> {
+      use _ <- result.try(require_non_empty("tracker.api_key", k))
+      use _ <- result.try(require_non_empty("tracker.endpoint", ep))
+      use _ <- result.try(require_non_empty("tracker.workspace_slug", ws))
+      require_non_empty("tracker.project_id", pid)
+    }
   }
 }
 
 fn validate_state_lists(config: Config) -> Result(Nil, ValidationError) {
   use active <- result.try(normalize_states(
     "tracker.active_states",
-    config.tracker.active_states,
+    tracker_active_states(config.tracker),
   ))
 
   use terminal <- result.try(normalize_states(
     "tracker.terminal_states",
-    config.tracker.terminal_states,
+    tracker_terminal_states(config.tracker),
   ))
 
   case find_overlap(active, terminal) {

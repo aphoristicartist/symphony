@@ -1,8 +1,10 @@
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import symphony/config.{type Config}
 import symphony/errors
 import symphony/template
+import symphony/tracker
 import symphony/types.{type Issue, type RunAttemptPhase}
 import symphony/validation
 import symphony/workspace
@@ -152,7 +154,7 @@ fn run_turns(
       )
       case turn_result.status {
         types.TurnSucceeded -> {
-          case check_issue_state(issue, config) {
+          case refetch_issue_active(issue, config) {
             True ->
               // Issue still active, continue with next turn (empty prompt for continuation)
               run_turns(adapter, session, "", config, issue, turn_count + 1)
@@ -166,9 +168,25 @@ fn run_turns(
   }
 }
 
-/// Check if issue is still in an active state
-fn check_issue_state(issue: Issue, config: Config) -> Bool {
-  validation.is_active_state(issue.state, config)
+/// Re-fetch the issue state from the tracker and check whether it is still active.
+/// Falls back to True (keep running) on any fetch error to avoid spurious cancellations.
+fn refetch_issue_active(issue: Issue, config: Config) -> Bool {
+  case tracker.build_tracker_adapter(config) {
+    Error(_) -> True
+    Ok(adapter) -> {
+      case adapter.fetch_issue_states_by_ids([issue.id]) {
+        Error(_) -> True
+        Ok(issues) -> {
+          case list.find(issues, fn(i) { i.id == issue.id }) {
+            Error(_) ->
+              // Issue not found in response — assume still active
+              True
+            Ok(refreshed) -> validation.is_active_state(refreshed.state, config)
+          }
+        }
+      }
+    }
+  }
 }
 
 /// Get the default command for an agent kind

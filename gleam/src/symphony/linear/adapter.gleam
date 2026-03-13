@@ -68,6 +68,7 @@ fn create_comment(
   issue_id: String,
   body: String,
 ) -> Result(Nil, errors.TrackerError) {
+  let api_key = linear_api_key(config)
   let query =
     "mutation { commentCreate(input: { issueId: \""
     <> issue_id
@@ -75,7 +76,7 @@ fn create_comment(
     <> json.to_string(json.string(body))
     <> " }) { success } }"
 
-  execute_graphql_mutation(config.tracker.api_key, query, "create_comment")
+  execute_graphql_mutation(api_key, query, "create_comment")
 }
 
 fn update_issue_state(
@@ -84,6 +85,7 @@ fn update_issue_state(
   state_name: String,
 ) -> Result(Nil, errors.TrackerError) {
   use state_id <- result.try(resolve_state_id(config, issue_id, state_name))
+  let api_key = linear_api_key(config)
 
   let query =
     "mutation { issueUpdate(id: \""
@@ -92,7 +94,15 @@ fn update_issue_state(
     <> state_id
     <> "\" }) { success } }"
 
-  execute_graphql_mutation(config.tracker.api_key, query, "update_issue_state")
+  execute_graphql_mutation(api_key, query, "update_issue_state")
+}
+
+/// Extract the Linear API key from config.tracker (must be LinearConfig).
+fn linear_api_key(config: Config) -> String {
+  case config.tracker {
+    config.LinearConfig(api_key: k, ..) -> k
+    config.PlaneConfig(api_key: k, ..) -> k
+  }
 }
 
 /// Resolve a state name to a Linear state ID by querying the issue's team.
@@ -114,7 +124,7 @@ fn resolve_state_id(
     |> request.set_host("https://api.linear.app/graphql")
     |> request.prepend_header(
       "Authorization",
-      "Bearer " <> config.tracker.api_key,
+      "Bearer " <> linear_api_key(config),
     )
     |> request.prepend_header("Content-Type", "application/json")
     |> request.set_body(body)

@@ -3,25 +3,13 @@ import symphony/errors
 import symphony/linear/adapter as linear_adapter
 import symphony/plane/adapter as plane_adapter
 import symphony/types
-import symphony/validation
 
-/// Build a TrackerAdapter from the given config, dispatching on tracker.kind.
+/// Build a TrackerAdapter from the given config, dispatching on the TrackerConfig variant.
 pub fn build_tracker_adapter(
   config: Config,
 ) -> Result(types.TrackerAdapter, errors.RunError) {
-  case validation.parse_tracker_kind(config.tracker.kind) {
-    Ok(kind) -> Ok(build_adapter_for_kind(kind, config))
-    Error(e) -> Error(errors.ConfigFailure(errors.ValidationFailed(error: e)))
-  }
-}
-
-/// Construct an adapter for the given tracker kind.
-fn build_adapter_for_kind(
-  kind: types.TrackerKind,
-  config: Config,
-) -> types.TrackerAdapter {
-  case kind {
-    types.Linear -> linear_adapter.build(config)
-    types.Plane -> plane_adapter.build(config)
+  case config.tracker {
+    config.LinearConfig(..) -> Ok(linear_adapter.build(config))
+    config.PlaneConfig(..) -> Ok(plane_adapter.build(config))
   }
 }

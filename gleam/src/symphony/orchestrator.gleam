@@ -1,4 +1,5 @@
 import gleam/dict
+import gleam/dynamic
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -96,6 +97,8 @@ pub fn start(
             handle_retry(state, retry_entry, config)
           types.CleanupTerminalWorkspaces -> handle_cleanup(state, config)
           types.SetOwnSubject(subject) -> handle_set_subject(state, subject)
+          types.WorkerProcessDown(issue_id, reason) ->
+            handle_worker_process_down(state, issue_id, reason, config)
         }
       },
     ),
@@ -155,13 +158,28 @@ fn handle_tick(
             False -> Ok(Nil)
           }
 
-          actor.Continue(new_state, None)
+          actor.Continue(new_state, Some(build_monitor_selector(new_state)))
         }
         Error(_) -> actor.Continue(reconciled_state, None)
       }
     }
     Error(_) -> actor.Continue(reconciled_state, None)
   }
+}
+
+/// Build a selector that listens for ProcessDown on all monitored workers.
+fn build_monitor_selector(
+  state: types.OrchestratorState,
+) -> process.Selector(types.OrchestratorMessage) {
+  dict.fold(state.running, process.new_selector(), fn(sel, issue_id, entry) {
+    case entry.monitor_ref {
+      Some(monitor) ->
+        process.selecting_process_down(sel, monitor, fn(down) {
+          types.WorkerProcessDown(issue_id: issue_id, reason: down.reason)
+        })
+      None -> sel
+    }
+  })
 }
 
 /// Fetch candidate issues using the tracker adapter
@@ -240,7 +258,8 @@ fn dispatch_issues(
 }
 
 /// Dispatch a single issue — starts a worker process that sends WorkerCompleted
-/// back to the orchestrator when done.
+/// back to the orchestrator when done. Monitors the worker PID so crashes
+/// immediately trigger WorkerProcessDown.
 fn dispatch_single_issue(
   issue: types.Issue,
   state: types.OrchestratorState,
@@ -255,7 +274,7 @@ fn dispatch_single_issue(
   case state.agent_adapter, state.own_subject {
     Some(adapter), Some(orch_subject) -> {
       let issue_id = issue.id
-      let _worker_pid =
+      let worker_pid =
         process.start(
           fn() {
             let run_result = agent_runner.run_issue(issue, config, 1, adapter)
@@ -270,12 +289,27 @@ fn dispatch_single_issue(
           },
           False,
         )
-      claimed_state
+      let monitor = process.monitor_process(worker_pid)
+      let entry =
+        types.RunningEntry(
+          worker_handle: None,
+          monitor_handle: None,
+          monitor_ref: Some(monitor),
+          issue_identifier: issue.identifier,
+          issue: issue,
+          session: None,
+          retry_attempt: None,
+          started_at: erlang_timestamp(),
+        )
+      types.OrchestratorState(
+        ..claimed_state,
+        running: dict.insert(claimed_state.running, issue.id, entry),
+      )
     }
     Some(adapter), None -> {
       // No subject yet; still dispatch but can't send completion callback
       let issue_id = issue.id
-      let _worker_pid =
+      let worker_pid =
         process.start(
           fn() {
             let _run_result = agent_runner.run_issue(issue, config, 1, adapter)
@@ -284,7 +318,22 @@ fn dispatch_single_issue(
           },
           False,
         )
-      claimed_state
+      let monitor = process.monitor_process(worker_pid)
+      let entry =
+        types.RunningEntry(
+          worker_handle: None,
+          monitor_handle: None,
+          monitor_ref: Some(monitor),
+          issue_identifier: issue.identifier,
+          issue: issue,
+          session: None,
+          retry_attempt: None,
+          started_at: erlang_timestamp(),
+        )
+      types.OrchestratorState(
+        ..claimed_state,
+        running: dict.insert(claimed_state.running, issue.id, entry),
+      )
     }
     None, _ -> claimed_state
   }
@@ -403,6 +452,46 @@ fn handle_retry(
       actor.Continue(new_state, None)
     }
     False -> actor.Continue(state, None)
+  }
+}
+
+/// Handle WorkerProcessDown — fired when a monitored worker exits unexpectedly.
+/// Normal exits (reason == "normal") are ignored because WorkerCompleted was
+/// already sent by the worker before it returned. Abnormal exits schedule a retry.
+fn handle_worker_process_down(
+  state: types.OrchestratorState,
+  issue_id: String,
+  reason: dynamic.Dynamic,
+  _config: Config,
+) -> actor.Next(types.OrchestratorMessage, types.OrchestratorState) {
+  let is_normal = case dynamic.string(reason) {
+    Ok("normal") -> True
+    _ -> False
+  }
+
+  case is_normal {
+    True ->
+      // Normal exit — worker already sent WorkerCompleted, nothing to do
+      actor.Continue(state, None)
+    False -> {
+      let identifier =
+        dict.get(state.running, issue_id)
+        |> result.map(fn(e) { e.issue_identifier })
+        |> result.unwrap(issue_id)
+      let attempt =
+        dict.get(state.retry_attempts, issue_id)
+        |> result.map(fn(e) { e.attempt })
+        |> result.unwrap(1)
+      let new_state =
+        schedule_retry(
+          state,
+          issue_id,
+          identifier,
+          attempt + 1,
+          "worker process crashed",
+        )
+      actor.Continue(new_state, Some(build_monitor_selector(new_state)))
+    }
   }
 }
 

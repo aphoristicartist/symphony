@@ -1,6 +1,6 @@
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type ProcessMonitor, type Subject}
 import gleam/option.{type Option}
 import gleam/set.{type Set}
 import symphony/errors.{type RunError}
@@ -300,6 +300,7 @@ pub type RunningEntry {
   RunningEntry(
     worker_handle: Option(String),
     monitor_handle: Option(String),
+    monitor_ref: Option(ProcessMonitor),
     issue_identifier: String,
     issue: Issue,
     session: Option(LiveSession),
@@ -322,6 +323,7 @@ pub type OrchestratorMessage {
   RetryIssue(retry_entry: RetryEntry)
   CleanupTerminalWorkspaces
   SetOwnSubject(subject: Subject(OrchestratorMessage))
+  WorkerProcessDown(issue_id: String, reason: Dynamic)
 }
 
 /// Single authoritative runtime state for the orchestrator.

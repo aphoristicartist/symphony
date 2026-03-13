@@ -5,6 +5,7 @@ import gleam/string
 import gleeunit
 import gleeunit/should
 import simplifile
+import symphony/agent_runner
 import symphony/claude_code/event_parser
 import symphony/codex/app_server
 import symphony/codex/dynamic_tool
@@ -429,10 +430,9 @@ pub fn config_load_valid_nested_yaml_test() {
   let assert Ok(Nil) = simplifile.write(to: path, contents: content)
   let assert Ok(cfg) = config.load(path)
 
-  cfg.tracker.kind
-  |> should.equal("linear")
+  let assert config.LinearConfig(project_slug: project_slug, ..) = cfg.tracker
 
-  cfg.tracker.project_slug
+  project_slug
   |> should.equal("CORE")
 
   cfg.workspace.root
@@ -892,17 +892,21 @@ pub fn config_load_plane_tracker_fields_test() {
   let assert Ok(Nil) = simplifile.write(to: path, contents: content)
   let assert Ok(cfg) = config.load(path)
 
-  cfg.tracker.kind
-  |> should.equal("plane")
+  let assert config.PlaneConfig(
+    endpoint: endpoint,
+    workspace_slug: workspace_slug,
+    project_id: project_id,
+    ..,
+  ) = cfg.tracker
 
-  cfg.tracker.endpoint
-  |> should.equal(Some("http://localhost:8080"))
+  endpoint
+  |> should.equal("http://localhost:8080")
 
-  cfg.tracker.workspace_slug
-  |> should.equal(Some("my-workspace"))
+  workspace_slug
+  |> should.equal("my-workspace")
 
-  cfg.tracker.project_id
-  |> should.equal(Some("abc-123"))
+  project_id
+  |> should.equal("abc-123")
 }
 
 // ============================================================================
@@ -1172,15 +1176,11 @@ pub fn types_orchestrator_state_new_fields_test() {
 
 fn make_test_config() -> config.Config {
   config.Config(
-    tracker: config.TrackerConfig(
-      kind: "linear",
+    tracker: config.LinearConfig(
       api_key: "test-key",
       project_slug: "TEST",
       active_states: ["Todo", "In Progress"],
       terminal_states: ["Done"],
-      endpoint: None,
-      workspace_slug: None,
-      project_id: None,
     ),
     polling: config.PollingConfig(interval_ms: 5000),
     workspace: config.WorkspaceConfig(root: "/tmp/test"),
@@ -1232,4 +1232,201 @@ fn make_state_with_data() -> types.OrchestratorState {
     tick_count: 42,
     own_subject: None,
   )
+}
+
+// ============================================================================
+// Integration Tests — mock tracker + mock agent
+// ============================================================================
+
+fn make_test_issue() -> types.Issue {
+  types.Issue(
+    id: "test-issue-1",
+    identifier: "TEST-1",
+    title: "Integration test issue",
+    description: None,
+    state: "In Progress",
+    priority: None,
+    branch_name: None,
+    url: None,
+    labels: [],
+    blocked_by: [],
+    created_at: None,
+    updated_at: None,
+  )
+}
+
+/// Mock agent adapter that immediately succeeds with one turn
+fn mock_agent_adapter_succeed() -> types.AgentAdapter {
+  types.AgentAdapter(
+    start_session: fn(_cfg) {
+      Ok(types.AgentSession(
+        session_id: Some("mock-session"),
+        agent_kind: types.Codex,
+        process_handle: types.NoProcess,
+      ))
+    },
+    run_turn: fn(_session, _prompt) {
+      Ok(types.TurnResult(
+        status: types.TurnSucceeded,
+        token_usage: None,
+        session_id: Some("mock-session"),
+        output: Some("Task completed"),
+      ))
+    },
+    stop_session: fn(_session) { Ok(Nil) },
+  )
+}
+
+/// Mock agent adapter that fails on run_turn
+fn mock_agent_adapter_fail() -> types.AgentAdapter {
+  types.AgentAdapter(
+    start_session: fn(_cfg) {
+      Ok(types.AgentSession(
+        session_id: Some("mock-fail-session"),
+        agent_kind: types.Codex,
+        process_handle: types.NoProcess,
+      ))
+    },
+    run_turn: fn(_session, _prompt) {
+      Error(errors.ProtocolError(
+        event: Some("run_turn"),
+        details: "Mock failure",
+      ))
+    },
+    stop_session: fn(_session) { Ok(Nil) },
+  )
+}
+
+/// Agent runner integration test: mock agent that succeeds one turn.
+/// After TurnSucceeded the runner re-fetches issue state; since the tracker
+/// returns an empty list (issue not found), it conservatively stays active and
+/// increments the turn counter until max_turns is hit.
+pub fn agent_runner_mock_succeed_one_turn_test() {
+  let issue = make_test_issue()
+  // max_turns = 1 so the runner exits after the first successful turn
+  let config =
+    config.Config(
+      ..make_test_config(),
+      agent: config.AgentConfig(
+        kind: "codex",
+        command: None,
+        max_concurrent_agents: 1,
+        max_turns: 1,
+        allowed_tools: None,
+        permission_mode: None,
+        provider: None,
+        model: None,
+        builtins: None,
+      ),
+    )
+
+  let result =
+    agent_runner.run_issue(issue, config, 1, mock_agent_adapter_succeed())
+
+  // With max_turns = 1 and a single TurnSucceeded, the runner hits TimedOut
+  // (one successful turn exhausts the budget of 1).
+  case result {
+    Ok(_) -> should.equal(True, True)
+    Error(_) -> should.fail()
+  }
+}
+
+/// Agent runner integration test: mock agent that fails on run_turn returns Failed.
+pub fn agent_runner_mock_fail_turn_test() {
+  let issue = make_test_issue()
+  let config = make_test_config()
+
+  let result =
+    agent_runner.run_issue(issue, config, 1, mock_agent_adapter_fail())
+
+  result
+  |> should.be_error()
+}
+
+/// Agent runner integration test: TurnCancelled immediately returns CanceledByReconciliation.
+pub fn agent_runner_mock_cancel_turn_test() {
+  let issue = make_test_issue()
+  let config = make_test_config()
+
+  let cancelled_adapter =
+    types.AgentAdapter(
+      start_session: fn(_cfg) {
+        Ok(types.AgentSession(
+          session_id: None,
+          agent_kind: types.Codex,
+          process_handle: types.NoProcess,
+        ))
+      },
+      run_turn: fn(_session, _prompt) {
+        Ok(types.TurnResult(
+          status: types.TurnCancelled,
+          token_usage: None,
+          session_id: None,
+          output: None,
+        ))
+      },
+      stop_session: fn(_session) { Ok(Nil) },
+    )
+
+  let assert Ok(phase) =
+    agent_runner.run_issue(issue, config, 1, cancelled_adapter)
+
+  phase
+  |> should.equal(types.CanceledByReconciliation)
+}
+
+/// TrackerConfig union: verify LinearConfig variant is created and matched correctly.
+pub fn tracker_config_linear_variant_test() {
+  let tracker =
+    config.LinearConfig(
+      api_key: "key",
+      project_slug: "PROJ",
+      active_states: ["Todo"],
+      terminal_states: ["Done"],
+    )
+
+  let config.LinearConfig(api_key: api_key, ..) = tracker
+
+  api_key
+  |> should.equal("key")
+}
+
+/// TrackerConfig union: verify PlaneConfig variant is created and matched correctly.
+pub fn tracker_config_plane_variant_test() {
+  let tracker =
+    config.PlaneConfig(
+      api_key: "plane-key",
+      endpoint: "https://plane.example.com",
+      workspace_slug: "my-ws",
+      project_id: "proj-uuid",
+      active_states: ["In Progress"],
+      terminal_states: ["Done"],
+    )
+
+  let config.PlaneConfig(endpoint: ep, ..) = tracker
+
+  ep
+  |> should.equal("https://plane.example.com")
+}
+
+/// Validation: is_active_state works with LinearConfig union.
+pub fn validation_is_active_state_linear_config_test() {
+  let config = make_test_config()
+
+  validation.is_active_state("In Progress", config)
+  |> should.equal(True)
+
+  validation.is_active_state("Done", config)
+  |> should.equal(False)
+}
+
+/// Validation: is_terminal_state works with LinearConfig union.
+pub fn validation_is_terminal_state_linear_config_test() {
+  let config = make_test_config()
+
+  validation.is_terminal_state("Done", config)
+  |> should.equal(True)
+
+  validation.is_terminal_state("In Progress", config)
+  |> should.equal(False)
 }

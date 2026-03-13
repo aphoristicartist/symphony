@@ -9,17 +9,22 @@ import gleam/string
 import simplifile
 import symphony/errors
 
-/// Configuration for the issue tracker (Linear or Plane)
+/// Configuration for the issue tracker (Linear or Plane).
+/// Variants enforce which fields are present for each backend.
 pub type TrackerConfig {
-  TrackerConfig(
-    kind: String,
+  LinearConfig(
     api_key: String,
     project_slug: String,
     active_states: List(String),
     terminal_states: List(String),
-    endpoint: option.Option(String),
-    workspace_slug: option.Option(String),
-    project_id: option.Option(String),
+  )
+  PlaneConfig(
+    api_key: String,
+    endpoint: String,
+    workspace_slug: String,
+    project_id: String,
+    active_states: List(String),
+    terminal_states: List(String),
   )
 }
 
@@ -293,22 +298,6 @@ fn build_tracker_config(
     "api_key",
     "tracker.api_key",
   ))
-  let project_slug = get_string_with_default(tracker_dict, "project_slug", "")
-  use endpoint <- result.try(get_optional_string(
-    tracker_dict,
-    "endpoint",
-    "tracker.endpoint",
-  ))
-  use workspace_slug <- result.try(get_optional_string(
-    tracker_dict,
-    "workspace_slug",
-    "tracker.workspace_slug",
-  ))
-  use project_id <- result.try(get_optional_string(
-    tracker_dict,
-    "project_id",
-    "tracker.project_id",
-  ))
   let active_states =
     get_string_list_with_default(tracker_dict, "active_states", [
       "Todo",
@@ -322,15 +311,56 @@ fn build_tracker_config(
       "Duplicate",
     ])
 
-  Ok(TrackerConfig(
-    kind: kind,
+  case string.lowercase(string.trim(kind)) {
+    "plane" ->
+      build_plane_tracker_config(
+        tracker_dict,
+        api_key,
+        active_states,
+        terminal_states,
+      )
+    _ -> {
+      let project_slug =
+        get_string_with_default(tracker_dict, "project_slug", "")
+      Ok(LinearConfig(
+        api_key: api_key,
+        project_slug: project_slug,
+        active_states: active_states,
+        terminal_states: terminal_states,
+      ))
+    }
+  }
+}
+
+/// Build Plane-specific tracker configuration
+fn build_plane_tracker_config(
+  tracker_dict: Dict(String, Dynamic),
+  api_key: String,
+  active_states: List(String),
+  terminal_states: List(String),
+) -> Result(TrackerConfig, errors.ConfigError) {
+  use endpoint <- result.try(get_string_required(
+    tracker_dict,
+    "endpoint",
+    "tracker.endpoint",
+  ))
+  use workspace_slug <- result.try(get_string_required(
+    tracker_dict,
+    "workspace_slug",
+    "tracker.workspace_slug",
+  ))
+  use project_id <- result.try(get_string_required(
+    tracker_dict,
+    "project_id",
+    "tracker.project_id",
+  ))
+  Ok(PlaneConfig(
     api_key: api_key,
-    project_slug: project_slug,
-    active_states: active_states,
-    terminal_states: terminal_states,
     endpoint: endpoint,
     workspace_slug: workspace_slug,
     project_id: project_id,
+    active_states: active_states,
+    terminal_states: terminal_states,
   ))
 }
 

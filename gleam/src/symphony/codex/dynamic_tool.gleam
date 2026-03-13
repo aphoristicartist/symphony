@@ -4,7 +4,6 @@ import gleam/http
 import gleam/http/request
 import gleam/httpc
 import gleam/json
-import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import symphony/config.{type Config}
@@ -95,7 +94,7 @@ fn execute_linear_graphql(
         |> request.set_path("/graphql")
         |> request.prepend_header(
           "Authorization",
-          "Bearer " <> config.tracker.api_key,
+          "Bearer " <> tracker_api_key(config),
         )
         |> request.prepend_header("Content-Type", "application/json")
         |> request.set_body(body)
@@ -177,9 +176,9 @@ fn execute_plane_api(
     _, Error(msg) -> ToolResult(output: encode_error(msg), success: False)
     Ok(method), Ok(path) -> {
       // Get the tracker endpoint, defaulting if not set
-      let endpoint = case config.tracker.endpoint {
-        Some(ep) -> ep
-        None -> "https://api.plane.so"
+      let endpoint = case config.tracker {
+        config.PlaneConfig(endpoint: ep, ..) -> ep
+        config.LinearConfig(..) -> "https://api.plane.so"
       }
 
       // Build the full URL by parsing the endpoint
@@ -188,7 +187,7 @@ fn execute_plane_api(
         |> result.map(fn(req) {
           req
           |> request.set_method(method)
-          |> request.prepend_header("X-API-Key", config.tracker.api_key)
+          |> request.prepend_header("X-API-Key", tracker_api_key(config))
           |> request.prepend_header("Content-Type", "application/json")
           |> request.set_body(body_str)
         })
@@ -229,6 +228,14 @@ fn execute_plane_api(
           )
       }
     }
+  }
+}
+
+/// Extract the API key from the TrackerConfig union.
+fn tracker_api_key(config: Config) -> String {
+  case config.tracker {
+    config.LinearConfig(api_key: k, ..) -> k
+    config.PlaneConfig(api_key: k, ..) -> k
   }
 }
 

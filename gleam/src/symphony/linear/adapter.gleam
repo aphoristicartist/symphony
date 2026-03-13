@@ -12,30 +12,32 @@ import symphony/linear/client
 import symphony/types
 
 /// Construct a TrackerAdapter backed by the Linear GraphQL API.
-pub fn build() -> types.TrackerAdapter {
+/// The config is closed over at build time; no Dynamic passing needed.
+pub fn build(config: Config) -> types.TrackerAdapter {
   types.TrackerAdapter(
-    fetch_candidate_issues: fetch_candidate_issues,
-    fetch_issue_states_by_ids: fetch_issue_states_by_ids,
-    create_comment: create_comment,
-    update_issue_state: update_issue_state,
+    fetch_candidate_issues: fn() { fetch_candidate_issues(config) },
+    fetch_issue_states_by_ids: fn(ids) {
+      fetch_issue_states_by_ids(config, ids)
+    },
+    create_comment: fn(issue_id, body) {
+      create_comment(config, issue_id, body)
+    },
+    update_issue_state: fn(issue_id, state_name) {
+      update_issue_state(config, issue_id, state_name)
+    },
   )
 }
 
-/// Fetch candidate issues from Linear. Config passed as Dynamic.
-pub fn fetch_candidate_issues(
-  config_dyn: dynamic.Dynamic,
+fn fetch_candidate_issues(
+  config: Config,
 ) -> Result(List(types.Issue), errors.TrackerError) {
-  let config: Config = dynamic.unsafe_coerce(config_dyn)
   client.fetch_active_issues(config)
 }
 
-/// Fetch current state for a list of issue IDs (for reconciliation).
-pub fn fetch_issue_states_by_ids(
-  config_dyn: dynamic.Dynamic,
+fn fetch_issue_states_by_ids(
+  config: Config,
   issue_ids: List(String),
 ) -> Result(List(types.Issue), errors.TrackerError) {
-  let config: Config = dynamic.unsafe_coerce(config_dyn)
-  // Fetch each issue individually and collect results
   let results =
     list.map(issue_ids, fn(issue_id) {
       case client.fetch_issue_state(config, issue_id) {
@@ -58,17 +60,14 @@ pub fn fetch_issue_states_by_ids(
       }
     })
 
-  // Collect successes, return first error if any
   list.try_map(results, fn(r) { r })
 }
 
-/// Post a comment on a Linear issue.
-pub fn create_comment(
-  config_dyn: dynamic.Dynamic,
+fn create_comment(
+  config: Config,
   issue_id: String,
   body: String,
 ) -> Result(Nil, errors.TrackerError) {
-  let config: Config = dynamic.unsafe_coerce(config_dyn)
   let query =
     "mutation { commentCreate(input: { issueId: \""
     <> issue_id
@@ -79,15 +78,11 @@ pub fn create_comment(
   execute_graphql_mutation(config.tracker.api_key, query, "create_comment")
 }
 
-/// Transition a Linear issue to a new state by name.
-pub fn update_issue_state(
-  config_dyn: dynamic.Dynamic,
+fn update_issue_state(
+  config: Config,
   issue_id: String,
   state_name: String,
 ) -> Result(Nil, errors.TrackerError) {
-  let config: Config = dynamic.unsafe_coerce(config_dyn)
-
-  // First resolve the state name to a state ID
   use state_id <- result.try(resolve_state_id(config, issue_id, state_name))
 
   let query =
@@ -187,19 +182,10 @@ fn find_state_id_in_response(
 
   case decoder(dyn) {
     Ok(states) -> {
-      let target_lower =
-        target_name
-        |> dynamic.from
-        |> fn(d) {
-          case dynamic.string(d) {
-            Ok(s) -> s
-            Error(_) -> target_name
-          }
-        }
       case
         list.find(states, fn(pair) {
           let #(_, name) = pair
-          name == target_name || name == target_lower
+          name == target_name
         })
       {
         Ok(#(id, _)) -> Ok(id)

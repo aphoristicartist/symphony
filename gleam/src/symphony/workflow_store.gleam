@@ -10,6 +10,7 @@ pub type WorkflowStoreMessage {
   CheckForChanges
   GetConfig(reply_to: Subject(Result(Config, errors.ConfigError)))
   Shutdown
+  SetSubject(subject: Subject(WorkflowStoreMessage))
 }
 
 /// Internal state of the workflow store actor.
@@ -19,6 +20,7 @@ pub type WorkflowStoreState {
     current_config: Option(Config),
     last_mtime: Option(Int),
     check_interval_ms: Int,
+    own_subject: Option(Subject(WorkflowStoreMessage)),
   )
 }
 
@@ -35,6 +37,7 @@ pub fn start(
       current_config: None,
       last_mtime: None,
       check_interval_ms: check_interval_ms,
+      own_subject: None,
     )
 
   actor.start_spec(actor.Spec(
@@ -48,6 +51,10 @@ pub fn start(
       case message {
         CheckForChanges -> {
           let new_state = check_and_reload(state)
+          case state.own_subject {
+            Some(subject) -> schedule_check(subject, state.check_interval_ms)
+            None -> Nil
+          }
           actor.Continue(new_state, None)
         }
         GetConfig(reply_to) -> {
@@ -55,9 +62,19 @@ pub fn start(
           actor.Continue(state, None)
         }
         Shutdown -> actor.Stop(process.Normal)
+        SetSubject(subject) -> {
+          let new_state =
+            WorkflowStoreState(..state, own_subject: Some(subject))
+          schedule_check(subject, state.check_interval_ms)
+          actor.Continue(new_state, None)
+        }
       }
     },
   ))
+  |> result.map(fn(subject) {
+    process.send(subject, SetSubject(subject))
+    subject
+  })
   |> result.map_error(fn(_) {
     errors.ParseError(details: "Failed to start workflow store actor")
   })
@@ -78,6 +95,15 @@ pub fn check_changes(store: Subject(WorkflowStoreMessage)) -> Nil {
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+/// Schedule the next periodic check after check_interval_ms.
+fn schedule_check(
+  subject: Subject(WorkflowStoreMessage),
+  interval_ms: Int,
+) -> Nil {
+  process.send_after(subject, interval_ms, CheckForChanges)
+  Nil
+}
 
 /// Check if the file has changed; reload if so.
 fn check_and_reload(state: WorkflowStoreState) -> WorkflowStoreState {

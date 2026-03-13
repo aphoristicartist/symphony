@@ -111,6 +111,7 @@ pub fn decode_state(
         agent_kind: None,
         last_cleanup_at: None,
         tick_count: tick_count,
+        own_subject: None,
       ))
     }
   }
@@ -233,5 +234,6 @@ fn empty_state() -> types.OrchestratorState {
     agent_kind: None,
     last_cleanup_at: None,
     tick_count: 0,
+    own_subject: None,
   )
 }

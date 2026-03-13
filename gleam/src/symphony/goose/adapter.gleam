@@ -45,7 +45,7 @@ fn start_session(
   Ok(types.AgentSession(
     session_id: None,
     agent_kind: types.Goose,
-    process_handle: dynamic.from(state),
+    process_handle: types.GooseProcess(inner: dynamic.from(state)),
   ))
 }
 
@@ -55,7 +55,11 @@ fn run_turn(
   session: types.AgentSession,
   prompt: String,
 ) -> Result(types.TurnResult, errors.AgentError) {
-  let state: GooseSessionState = dynamic.unsafe_coerce(session.process_handle)
+  let inner = case session.process_handle {
+    types.GooseProcess(inner: i) -> i
+    _ -> dynamic.from(Nil)
+  }
+  let state: GooseSessionState = dynamic.unsafe_coerce(inner)
 
   case
     subprocess.run(

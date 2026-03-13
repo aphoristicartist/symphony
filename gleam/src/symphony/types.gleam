@@ -1,5 +1,6 @@
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
+import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option}
 import gleam/set.{type Set}
 import symphony/errors.{type RunError}
@@ -52,12 +53,27 @@ pub type AgentSessionConfig {
   )
 }
 
+/// Typed process handle for each supported agent backend.
+/// Each variant is created and consumed only by its own adapter.
+/// The inner Dynamic field still requires a coerce inside each adapter,
+/// but the tag ensures mismatches are detected rather than silently corrupted.
+pub type AgentProcessHandle {
+  /// Codex: carries the CodexProcess as Dynamic
+  CodexProcess(inner: Dynamic)
+  /// Claude Code: carries the ClaudeCodeProcess as Dynamic
+  ClaudeCodeProcess(inner: Dynamic)
+  /// Goose: carries the GooseSessionState as Dynamic
+  GooseProcess(inner: Dynamic)
+  /// No active process
+  NoProcess
+}
+
 /// Handle to a running agent session.
 pub type AgentSession {
   AgentSession(
     session_id: Option(String),
     agent_kind: AgentKind,
-    process_handle: Dynamic,
+    process_handle: AgentProcessHandle,
   )
 }
 
@@ -84,14 +100,11 @@ pub type TrackerKind {
 /// Record-of-functions adapter for issue tracker backends.
 pub type TrackerAdapter {
   TrackerAdapter(
-    fetch_candidate_issues: fn(Dynamic) ->
+    fetch_candidate_issues: fn() -> Result(List(Issue), errors.TrackerError),
+    fetch_issue_states_by_ids: fn(List(String)) ->
       Result(List(Issue), errors.TrackerError),
-    fetch_issue_states_by_ids: fn(Dynamic, List(String)) ->
-      Result(List(Issue), errors.TrackerError),
-    create_comment: fn(Dynamic, String, String) ->
-      Result(Nil, errors.TrackerError),
-    update_issue_state: fn(Dynamic, String, String) ->
-      Result(Nil, errors.TrackerError),
+    create_comment: fn(String, String) -> Result(Nil, errors.TrackerError),
+    update_issue_state: fn(String, String) -> Result(Nil, errors.TrackerError),
   )
 }
 
@@ -295,6 +308,22 @@ pub type RunningEntry {
   )
 }
 
+/// Result from a worker process.
+pub type WorkerResult {
+  WorkerSucceeded
+  WorkerFailed(error: errors.RunError)
+  WorkerTimedOut
+}
+
+/// Orchestrator message types.
+pub type OrchestratorMessage {
+  Tick
+  WorkerCompleted(issue_id: String, result: WorkerResult)
+  RetryIssue(retry_entry: RetryEntry)
+  CleanupTerminalWorkspaces
+  SetOwnSubject(subject: Subject(OrchestratorMessage))
+}
+
 /// Single authoritative runtime state for the orchestrator.
 pub type OrchestratorState {
   OrchestratorState(
@@ -311,5 +340,6 @@ pub type OrchestratorState {
     agent_kind: Option(AgentKind),
     last_cleanup_at: Option(Int),
     tick_count: Int,
+    own_subject: Option(Subject(OrchestratorMessage)),
   )
 }

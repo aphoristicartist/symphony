@@ -54,12 +54,12 @@ fn wait_for_init(
           Ok(types.AgentSession(
             session_id: Some(session_id),
             agent_kind: types.ClaudeCode,
-            process_handle: dynamic.from(
+            process_handle: types.ClaudeCodeProcess(inner: dynamic.from(
               subprocess.ClaudeCodeProcess(
                 ..process,
                 session_id: Some(session_id),
               ),
-            ),
+            )),
           ))
         event_parser.ErrorEvent(message) ->
           Error(errors.ProtocolError(
@@ -83,7 +83,7 @@ fn run_turn(
   prompt: String,
 ) -> Result(types.TurnResult, errors.AgentError) {
   let process: subprocess.ClaudeCodeProcess =
-    dynamic.unsafe_coerce(session.process_handle)
+    dynamic.unsafe_coerce(extract_inner(session.process_handle))
 
   // For Claude Code, each turn is a separate invocation. If we have a
   // session_id, resume; otherwise start fresh.
@@ -197,9 +197,19 @@ fn collect_turn_loop(
 /// Stop the Claude Code session by terminating the underlying process.
 fn stop_session(session: types.AgentSession) -> Result(Nil, errors.AgentError) {
   let process: subprocess.ClaudeCodeProcess =
-    dynamic.unsafe_coerce(session.process_handle)
+    dynamic.unsafe_coerce(extract_inner(session.process_handle))
   subprocess.stop(process)
   Ok(Nil)
+}
+
+/// Extract the inner Dynamic from a typed process handle.
+fn extract_inner(handle: types.AgentProcessHandle) -> dynamic.Dynamic {
+  case handle {
+    types.ClaudeCodeProcess(inner: inner) -> inner
+    types.CodexProcess(inner: inner) -> inner
+    types.GooseProcess(inner: inner) -> inner
+    types.NoProcess -> dynamic.from(Nil)
+  }
 }
 
 /// Extract the working directory from the process. Since ClaudeCodeProcess

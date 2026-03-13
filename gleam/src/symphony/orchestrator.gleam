@@ -1,5 +1,4 @@
 import gleam/dict
-import gleam/dynamic
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -11,25 +10,19 @@ import symphony/agent
 import symphony/agent_runner
 import symphony/config.{type Config}
 import symphony/errors
+import symphony/persistence
 import symphony/tracker
 import symphony/types
 import symphony/validation
 import symphony/workspace
 
-/// Orchestrator message types
-pub type OrchestratorMessage {
-  Tick
-  WorkerCompleted(issue_id: String, result: WorkerResult)
-  RetryIssue(retry_entry: types.RetryEntry)
-  CleanupTerminalWorkspaces
-}
+/// Type alias for convenience within this module.
+pub type OrchestratorMessage =
+  types.OrchestratorMessage
 
-/// Result from a worker
-pub type WorkerResult {
-  WorkerSucceeded
-  WorkerFailed(error: errors.RunError)
-  WorkerTimedOut
-}
+/// Type alias for convenience within this module.
+pub type WorkerResult =
+  types.WorkerResult
 
 /// Maximum retry backoff in milliseconds (1 hour)
 const max_retry_backoff_ms = 3_600_000
@@ -40,7 +33,7 @@ const cleanup_tick_interval = 10
 /// Start the orchestrator
 pub fn start(
   config: Config,
-) -> Result(Subject(OrchestratorMessage), errors.OrchestrationError) {
+) -> Result(Subject(types.OrchestratorMessage), errors.OrchestrationError) {
   use tracker_adapter <- result.try(
     tracker.build_tracker_adapter(config)
     |> result.map_error(fn(e) {
@@ -87,6 +80,7 @@ pub fn start(
       agent_kind: Some(agent_kind),
       last_cleanup_at: None,
       tick_count: 0,
+      own_subject: None,
     )
 
   actor.start_spec(
@@ -95,15 +89,21 @@ pub fn start(
       init_timeout: 5000,
       loop: fn(message, state) {
         case message {
-          Tick -> handle_tick(state, config)
-          WorkerCompleted(issue_id, result) ->
-            handle_worker_completed(state, issue_id, result, config)
-          RetryIssue(retry_entry) -> handle_retry(state, retry_entry, config)
-          CleanupTerminalWorkspaces -> handle_cleanup(state, config)
+          types.Tick -> handle_tick(state, config)
+          types.WorkerCompleted(issue_id, worker_result) ->
+            handle_worker_completed(state, issue_id, worker_result, config)
+          types.RetryIssue(retry_entry) ->
+            handle_retry(state, retry_entry, config)
+          types.CleanupTerminalWorkspaces -> handle_cleanup(state, config)
+          types.SetOwnSubject(subject) -> handle_set_subject(state, subject)
         }
       },
     ),
   )
+  |> result.map(fn(subject) {
+    process.send(subject, types.SetOwnSubject(subject))
+    subject
+  })
   |> result.map_error(fn(_) {
     errors.ReconciliationFailed(
       issue_id: None,
@@ -113,11 +113,22 @@ pub fn start(
   })
 }
 
+/// Handle SetOwnSubject message — store our own subject for worker callbacks.
+fn handle_set_subject(
+  state: types.OrchestratorState,
+  subject: Subject(types.OrchestratorMessage),
+) -> actor.Next(types.OrchestratorMessage, types.OrchestratorState) {
+  actor.Continue(
+    types.OrchestratorState(..state, own_subject: Some(subject)),
+    None,
+  )
+}
+
 /// Handle tick message
 fn handle_tick(
   state: types.OrchestratorState,
   config: Config,
-) -> actor.Next(OrchestratorMessage, types.OrchestratorState) {
+) -> actor.Next(types.OrchestratorMessage, types.OrchestratorState) {
   let new_tick = state.tick_count + 1
   let ticked_state = types.OrchestratorState(..state, tick_count: new_tick)
 
@@ -137,6 +148,13 @@ fn handle_tick(
         Ok(issues) -> {
           let candidates = filter_candidates(issues, reconciled_state)
           let new_state = dispatch_issues(candidates, reconciled_state, config)
+
+          // Periodic state checkpoint every 10 ticks
+          let _checkpoint = case new_tick % 10 == 0 {
+            True -> persistence.save_snapshot(new_state, config.workspace.root)
+            False -> Ok(Nil)
+          }
+
           actor.Continue(new_state, None)
         }
         Error(_) -> actor.Continue(reconciled_state, None)
@@ -146,13 +164,13 @@ fn handle_tick(
   }
 }
 
-/// Fetch candidate issues using the tracker adapter or fallback to client
+/// Fetch candidate issues using the tracker adapter
 fn fetch_candidates(
   state: types.OrchestratorState,
-  config: Config,
+  _config: Config,
 ) -> Result(List(types.Issue), errors.TrackerError) {
   case state.tracker_adapter {
-    Some(adapter) -> adapter.fetch_candidate_issues(dynamic.from(config))
+    Some(adapter) -> adapter.fetch_candidate_issues()
     None ->
       Error(errors.ApiError(
         operation: "fetch_candidates",
@@ -173,7 +191,7 @@ fn reconcile_running_issues(
     [], _ -> state
     _, None -> state
     ids, Some(adapter) -> {
-      case adapter.fetch_issue_states_by_ids(dynamic.from(config), ids) {
+      case adapter.fetch_issue_states_by_ids(ids) {
         Ok(issues) ->
           list.fold(issues, state, fn(acc, issue) {
             case validation.is_active_state(issue.state, config) {
@@ -221,7 +239,8 @@ fn dispatch_issues(
   })
 }
 
-/// Dispatch a single issue
+/// Dispatch a single issue — starts a worker process that sends WorkerCompleted
+/// back to the orchestrator when done.
 fn dispatch_single_issue(
   issue: types.Issue,
   state: types.OrchestratorState,
@@ -233,25 +252,41 @@ fn dispatch_single_issue(
       claimed: set.insert(state.claimed, issue.id),
     )
 
-  case state.agent_adapter {
-    Some(adapter) -> {
+  case state.agent_adapter, state.own_subject {
+    Some(adapter), Some(orch_subject) -> {
+      let issue_id = issue.id
       let _worker_pid =
         process.start(
           fn() {
-            let result = agent_runner.run_issue(issue, config, 1, adapter)
-            let worker_result = case result {
-              Ok(_) -> WorkerSucceeded
-              Error(e) -> WorkerFailed(error: e)
+            let run_result = agent_runner.run_issue(issue, config, 1, adapter)
+            let worker_result = case run_result {
+              Ok(_) -> types.WorkerSucceeded
+              Error(e) -> types.WorkerFailed(error: e)
             }
-            // In a full implementation, send WorkerCompleted back to orchestrator
-            let _ = worker_result
+            process.send(
+              orch_subject,
+              types.WorkerCompleted(issue_id, worker_result),
+            )
+          },
+          False,
+        )
+      claimed_state
+    }
+    Some(adapter), None -> {
+      // No subject yet; still dispatch but can't send completion callback
+      let issue_id = issue.id
+      let _worker_pid =
+        process.start(
+          fn() {
+            let _run_result = agent_runner.run_issue(issue, config, 1, adapter)
+            let _ = issue_id
             Nil
           },
           False,
         )
       claimed_state
     }
-    None -> claimed_state
+    None, _ -> claimed_state
   }
 }
 
@@ -259,11 +294,11 @@ fn dispatch_single_issue(
 fn handle_worker_completed(
   state: types.OrchestratorState,
   issue_id: String,
-  result: WorkerResult,
+  worker_result: types.WorkerResult,
   _config: Config,
-) -> actor.Next(OrchestratorMessage, types.OrchestratorState) {
-  case result {
-    WorkerSucceeded -> {
+) -> actor.Next(types.OrchestratorMessage, types.OrchestratorState) {
+  case worker_result {
+    types.WorkerSucceeded -> {
       let new_state =
         types.OrchestratorState(
           ..state,
@@ -273,7 +308,7 @@ fn handle_worker_completed(
         )
       actor.Continue(new_state, None)
     }
-    WorkerFailed(error) -> {
+    types.WorkerFailed(error) -> {
       let attempt =
         dict.get(state.retry_attempts, issue_id)
         |> result.map(fn(e) { e.attempt })
@@ -292,7 +327,7 @@ fn handle_worker_completed(
         )
       actor.Continue(new_state, None)
     }
-    WorkerTimedOut -> {
+    types.WorkerTimedOut -> {
       let attempt =
         dict.get(state.retry_attempts, issue_id)
         |> result.map(fn(e) { e.attempt })
@@ -353,7 +388,7 @@ fn handle_retry(
   state: types.OrchestratorState,
   retry_entry: types.RetryEntry,
   _config: Config,
-) -> actor.Next(OrchestratorMessage, types.OrchestratorState) {
+) -> actor.Next(types.OrchestratorMessage, types.OrchestratorState) {
   case erlang_timestamp() >= retry_entry.due_at_ms {
     True -> {
       // Remove from retry queue and dispatch on next tick
@@ -375,7 +410,7 @@ fn handle_retry(
 fn handle_cleanup(
   state: types.OrchestratorState,
   config: Config,
-) -> actor.Next(OrchestratorMessage, types.OrchestratorState) {
+) -> actor.Next(types.OrchestratorMessage, types.OrchestratorState) {
   let new_state = handle_cleanup_pass(state, config)
   actor.Continue(new_state, None)
 }
@@ -405,7 +440,7 @@ fn erlang_timestamp() -> Int {
   do_erlang_timestamp()
 }
 
-@external(erlang, "erlang", "system_time")
+@external(erlang, "symphony_workflow_store_ffi", "system_time_ms")
 fn do_erlang_timestamp() -> Int
 
 /// Left-shift an integer (for exponential backoff calculation)

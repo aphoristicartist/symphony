@@ -10,15 +10,18 @@ pub fn build_tracker_adapter(
   config: Config,
 ) -> Result(types.TrackerAdapter, errors.RunError) {
   case validation.parse_tracker_kind(config.tracker.kind) {
-    Ok(kind) -> Ok(build_adapter_for_kind(kind))
+    Ok(kind) -> Ok(build_adapter_for_kind(kind, config))
     Error(e) -> Error(errors.ConfigFailure(errors.ValidationFailed(error: e)))
   }
 }
 
 /// Construct an adapter for the given tracker kind.
-fn build_adapter_for_kind(kind: types.TrackerKind) -> types.TrackerAdapter {
+fn build_adapter_for_kind(
+  kind: types.TrackerKind,
+  config: Config,
+) -> types.TrackerAdapter {
   case kind {
-    types.Linear -> linear_adapter.build()
-    types.Plane -> plane_adapter.build()
+    types.Linear -> linear_adapter.build(config)
+    types.Plane -> plane_adapter.build(config)
   }
 }

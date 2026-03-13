@@ -1,4 +1,3 @@
-import gleam/dynamic
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -9,21 +8,25 @@ import symphony/plane/normalizer
 import symphony/types
 
 /// Construct a TrackerAdapter backed by the Plane REST API.
-pub fn build() -> types.TrackerAdapter {
+/// The config is closed over at build time; no Dynamic passing needed.
+pub fn build(config: Config) -> types.TrackerAdapter {
   types.TrackerAdapter(
-    fetch_candidate_issues: fetch_candidate_issues,
-    fetch_issue_states_by_ids: fetch_issue_states_by_ids,
-    create_comment: create_comment,
-    update_issue_state: update_issue_state,
+    fetch_candidate_issues: fn() { fetch_candidate_issues(config) },
+    fetch_issue_states_by_ids: fn(ids) {
+      fetch_issue_states_by_ids(config, ids)
+    },
+    create_comment: fn(issue_id, body) {
+      create_comment(config, issue_id, body)
+    },
+    update_issue_state: fn(issue_id, state_name) {
+      update_issue_state(config, issue_id, state_name)
+    },
   )
 }
 
-/// Fetch candidate issues from Plane, filtered by active states.
-pub fn fetch_candidate_issues(
-  config_dyn: dynamic.Dynamic,
+fn fetch_candidate_issues(
+  config: Config,
 ) -> Result(List(types.Issue), errors.TrackerError) {
-  let config: Config = dynamic.unsafe_coerce(config_dyn)
-
   use #(endpoint, workspace_slug, project_id) <- result.try(
     extract_plane_config(config),
   )
@@ -39,13 +42,10 @@ pub fn fetch_candidate_issues(
   Ok(list.map(items, normalizer.normalize_issue))
 }
 
-/// Fetch current state for a list of issue IDs (for reconciliation).
-pub fn fetch_issue_states_by_ids(
-  config_dyn: dynamic.Dynamic,
+fn fetch_issue_states_by_ids(
+  config: Config,
   issue_ids: List(String),
 ) -> Result(List(types.Issue), errors.TrackerError) {
-  let config: Config = dynamic.unsafe_coerce(config_dyn)
-
   use #(endpoint, workspace_slug, project_id) <- result.try(
     extract_plane_config(config),
   )
@@ -69,14 +69,11 @@ pub fn fetch_issue_states_by_ids(
   list.try_map(results, fn(r) { r })
 }
 
-/// Post a comment on a Plane issue.
-pub fn create_comment(
-  config_dyn: dynamic.Dynamic,
+fn create_comment(
+  config: Config,
   issue_id: String,
   body: String,
 ) -> Result(Nil, errors.TrackerError) {
-  let config: Config = dynamic.unsafe_coerce(config_dyn)
-
   use #(endpoint, workspace_slug, project_id) <- result.try(
     extract_plane_config(config),
   )
@@ -91,19 +88,15 @@ pub fn create_comment(
   )
 }
 
-/// Transition a Plane issue to a new state by name.
-pub fn update_issue_state(
-  config_dyn: dynamic.Dynamic,
+fn update_issue_state(
+  config: Config,
   issue_id: String,
   state_name: String,
 ) -> Result(Nil, errors.TrackerError) {
-  let config: Config = dynamic.unsafe_coerce(config_dyn)
-
   use #(endpoint, workspace_slug, project_id) <- result.try(
     extract_plane_config(config),
   )
 
-  // Resolve state name to UUID
   use state_id <- result.try(plane_client.resolve_state_id(
     endpoint,
     config.tracker.api_key,

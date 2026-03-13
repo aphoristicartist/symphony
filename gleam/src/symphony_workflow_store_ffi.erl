@@ -1,5 +1,5 @@
 -module(symphony_workflow_store_ffi).
--export([get_file_mtime/1]).
+-export([get_file_mtime/1, system_time_ms/0]).
 
 %% Return the file modification time as Unix seconds (integer), or an error.
 get_file_mtime(Path) ->
@@ -10,3 +10,7 @@ get_file_mtime(Path) ->
                    - calendar:datetime_to_gregorian_seconds({{1970,1,1},{0,0,0}}),
             {ok, Secs}
     end.
+
+%% Return current Unix time in milliseconds.
+system_time_ms() ->
+    erlang:system_time(millisecond).

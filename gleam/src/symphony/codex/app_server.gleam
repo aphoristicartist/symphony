@@ -146,6 +146,32 @@ fn stream_loop(process: CodexProcess, handler: fn(CodexEvent) -> Nil) -> Nil {
   }
 }
 
+/// Collect all events for a turn into a list (immutable alternative to stream_events).
+pub fn collect_events(process: CodexProcess) -> List(CodexEvent) {
+  collect_loop(process, [])
+}
+
+fn collect_loop(
+  process: CodexProcess,
+  acc: List(CodexEvent),
+) -> List(CodexEvent) {
+  case read_event(process) {
+    Ok(event) -> {
+      let new_acc = [event, ..acc]
+      case event {
+        ThreadComplete(_) -> list.reverse(new_acc)
+        ProcessError(_) -> list.reverse(new_acc)
+        _ -> collect_loop(process, new_acc)
+      }
+    }
+    Error(error) ->
+      list.reverse([
+        ProcessError(message: errors.agent_error_message(error)),
+        ..acc
+      ])
+  }
+}
+
 /// Read a single event from the process
 fn read_event(process: CodexProcess) -> Result(CodexEvent, errors.AgentError) {
   case do_read_event(process) {

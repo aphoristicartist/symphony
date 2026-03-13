@@ -396,6 +396,7 @@ fn empty_orchestrator_state() -> types.OrchestratorState {
     agent_kind: None,
     last_cleanup_at: None,
     tick_count: 0,
+    own_subject: None,
   )
 }
 
@@ -1229,5 +1230,6 @@ fn make_state_with_data() -> types.OrchestratorState {
     agent_kind: Some(types.Codex),
     last_cleanup_at: None,
     tick_count: 42,
+    own_subject: None,
   )
 }

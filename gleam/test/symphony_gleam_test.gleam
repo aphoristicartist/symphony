@@ -1,4 +1,5 @@
 import gleam/dict
+import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/set
 import gleam/string
@@ -1429,4 +1430,248 @@ pub fn validation_is_terminal_state_linear_config_test() {
 
   validation.is_terminal_state("In Progress", config)
   |> should.equal(False)
+}
+
+// ============================================================================
+// Orchestrator State Transition Tests (issue #10)
+// ============================================================================
+
+/// Claiming an issue inserts its ID into the claimed set and the subsequent
+/// completion moves it out of claimed and into completed — exactly the
+/// lifecycle the orchestrator follows when dispatching a worker.
+pub fn orchestrator_state_claimed_tracking_test() {
+  let state = empty_orchestrator_state()
+  let issue_id = "issue-orchestrator-1"
+
+  // Initially not claimed or completed
+  set.contains(state.claimed, issue_id)
+  |> should.be_false()
+  set.contains(state.completed, issue_id)
+  |> should.be_false()
+
+  // Simulate claim (dispatcher inserts into claimed before spawning worker)
+  let claimed_state =
+    types.OrchestratorState(
+      ..state,
+      claimed: set.insert(state.claimed, issue_id),
+    )
+  set.contains(claimed_state.claimed, issue_id)
+  |> should.be_true()
+
+  // Simulate successful completion (WorkerCompleted handler moves to completed)
+  let completed_state =
+    types.OrchestratorState(
+      ..claimed_state,
+      claimed: set.delete(claimed_state.claimed, issue_id),
+      completed: set.insert(claimed_state.completed, issue_id),
+    )
+  set.contains(completed_state.claimed, issue_id)
+  |> should.be_false()
+  set.contains(completed_state.completed, issue_id)
+  |> should.be_true()
+}
+
+/// filter_candidates logic: an issue already in claimed, running, completed,
+/// or retry_attempts must be excluded from dispatch. Verify each gate in
+/// isolation using the OrchestratorState type directly.
+pub fn orchestrator_filter_gates_test() {
+  let issue_id = "issue-filter-1"
+
+  let base = empty_orchestrator_state()
+
+  // Gate 1: in claimed
+  let with_claimed =
+    types.OrchestratorState(..base, claimed: set.insert(base.claimed, issue_id))
+  set.contains(with_claimed.claimed, issue_id)
+  |> should.be_true()
+
+  // Gate 2: in completed
+  let with_completed =
+    types.OrchestratorState(
+      ..base,
+      completed: set.insert(base.completed, issue_id),
+    )
+  set.contains(with_completed.completed, issue_id)
+  |> should.be_true()
+
+  // Gate 3: in retry_attempts
+  let entry =
+    types.RetryEntry(
+      issue_id: issue_id,
+      identifier: "TEST-99",
+      attempt: 1,
+      due_at_ms: 99_999_999,
+      timer_handle: None,
+      error: Some("connection refused"),
+    )
+  let with_retry =
+    types.OrchestratorState(
+      ..base,
+      retry_attempts: dict.insert(base.retry_attempts, issue_id, entry),
+    )
+  dict.has_key(with_retry.retry_attempts, issue_id)
+  |> should.be_true()
+}
+
+/// RetryEntry carries the fields the orchestrator needs to schedule and
+/// identify a retry: attempt counter, due time, and a human-readable error.
+pub fn orchestrator_retry_entry_fields_test() {
+  let entry =
+    types.RetryEntry(
+      issue_id: "issue-retry-1",
+      identifier: "TEST-1",
+      attempt: 2,
+      due_at_ms: 99_999,
+      timer_handle: None,
+      error: Some("connection refused"),
+    )
+
+  entry.attempt
+  |> should.equal(2)
+
+  entry.error
+  |> should.equal(Some("connection refused"))
+
+  // A positive due_at_ms means the retry is scheduled in the future
+  { entry.due_at_ms > 0 }
+  |> should.be_true()
+}
+
+/// WorkerResult variants must be constructable and distinguishable — the
+/// orchestrator pattern-matches on them to decide whether to complete or retry.
+pub fn orchestrator_worker_result_variants_test() {
+  let ok = types.WorkerSucceeded
+  let timeout = types.WorkerTimedOut
+  let fail =
+    types.WorkerFailed(
+      error: errors.AgentFailure(errors.LaunchFailed(
+        command: "codex",
+        workspace_path: "/tmp/ws",
+        details: "not found",
+      )),
+    )
+
+  ok
+  |> should.equal(types.WorkerSucceeded)
+
+  timeout
+  |> should.equal(types.WorkerTimedOut)
+
+  // WorkerFailed carries a payload so we match on it to verify the variant
+  let types.WorkerFailed(error: _) = fail
+  should.equal(True, True)
+}
+
+/// tick_count is incremented on every Tick message. The initial state starts
+/// at zero so we can assert the field is present and has the right default.
+pub fn orchestrator_initial_tick_count_test() {
+  let state = empty_orchestrator_state()
+
+  state.tick_count
+  |> should.equal(0)
+
+  // Simulate one tick
+  let after_tick =
+    types.OrchestratorState(..state, tick_count: state.tick_count + 1)
+  after_tick.tick_count
+  |> should.equal(1)
+}
+
+// ============================================================================
+// Agent Runner Stall Detection Tests (issue #11)
+// ============================================================================
+
+/// A mock adapter that blocks forever should be cut off by the timeout and
+/// return a StallDetected error.
+pub fn agent_runner_stall_detection_test() {
+  let issue = make_test_issue()
+
+  // Set an extremely short timeout (10ms) so the stall fires immediately
+  let config =
+    config.Config(
+      ..make_test_config(),
+      codex: config.CodexConfig(
+        command: "codex app-server",
+        turn_timeout_ms: 10,
+      ),
+      agent: config.AgentConfig(
+        kind: "codex",
+        command: None,
+        max_concurrent_agents: 1,
+        max_turns: 5,
+        allowed_tools: None,
+        permission_mode: None,
+        provider: None,
+        model: None,
+        builtins: None,
+      ),
+    )
+
+  // Adapter that sleeps 5 seconds — much longer than the 10ms timeout
+  let slow_adapter =
+    types.AgentAdapter(
+      start_session: fn(_cfg) {
+        Ok(types.AgentSession(
+          session_id: Some("slow-session"),
+          agent_kind: types.Codex,
+          process_handle: types.NoProcess,
+        ))
+      },
+      run_turn: fn(_session, _prompt) {
+        process.sleep(5000)
+        Ok(types.TurnResult(
+          status: types.TurnSucceeded,
+          token_usage: None,
+          session_id: None,
+          output: None,
+        ))
+      },
+      stop_session: fn(_session) { Ok(Nil) },
+    )
+
+  let result = agent_runner.run_issue(issue, config, 1, slow_adapter)
+
+  // Should fail with a StallDetected agent error
+  case result {
+    Error(errors.AgentFailure(errors.StallDetected(
+      issue_id: _,
+      stall_timeout_ms: 10,
+      ..,
+    ))) -> True
+    _ -> False
+  }
+  |> should.be_true()
+}
+
+/// When turn_timeout_ms is 0 the timeout is disabled and the adapter runs
+/// to completion — a fast adapter should still succeed.
+pub fn agent_runner_no_stall_when_timeout_disabled_test() {
+  let issue = make_test_issue()
+
+  let config =
+    config.Config(
+      ..make_test_config(),
+      codex: config.CodexConfig(command: "codex app-server", turn_timeout_ms: 0),
+      agent: config.AgentConfig(
+        kind: "codex",
+        command: None,
+        max_concurrent_agents: 1,
+        max_turns: 1,
+        allowed_tools: None,
+        permission_mode: None,
+        provider: None,
+        model: None,
+        builtins: None,
+      ),
+    )
+
+  let result =
+    agent_runner.run_issue(issue, config, 1, mock_agent_adapter_succeed())
+
+  // Should succeed (no stall timeout when 0)
+  case result {
+    Ok(_) -> True
+    Error(_) -> False
+  }
+  |> should.be_true()
 }

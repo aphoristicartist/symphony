@@ -1,3 +1,5 @@
+import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -136,6 +138,45 @@ fn build_prompt(
   })
 }
 
+/// Run a single turn, wrapping it with a stall timeout if configured.
+/// If `timeout_ms` is zero or negative the call is made directly without spawning
+/// a separate process. Otherwise a fresh process runs the turn and we wait at
+/// most `timeout_ms` milliseconds; if no reply arrives we return StallDetected.
+fn run_turn_with_timeout(
+  adapter: types.AgentAdapter,
+  session: types.AgentSession,
+  prompt: String,
+  timeout_ms: Int,
+  issue_id: String,
+) -> Result(types.TurnResult, errors.AgentError) {
+  case timeout_ms <= 0 {
+    True -> adapter.run_turn(session, prompt)
+    False -> {
+      let reply_subject = process.new_subject()
+      let _pid =
+        process.start(
+          fn() {
+            let result = adapter.run_turn(session, prompt)
+            process.send(reply_subject, result)
+          },
+          False,
+        )
+      case process.receive(reply_subject, timeout_ms) {
+        Ok(result) -> result
+        Error(Nil) ->
+          Error(errors.StallDetected(
+            issue_id: issue_id,
+            last_event_ms: None,
+            stall_timeout_ms: timeout_ms,
+            details: "turn timed out after "
+              <> int.to_string(timeout_ms)
+              <> "ms",
+          ))
+      }
+    }
+  }
+}
+
 /// Run turns until completion or max turns reached
 fn run_turns(
   adapter: types.AgentAdapter,
@@ -149,7 +190,13 @@ fn run_turns(
     True -> Ok(types.TimedOut)
     False -> {
       use turn_result <- result.try(
-        adapter.run_turn(session, prompt)
+        run_turn_with_timeout(
+          adapter,
+          session,
+          prompt,
+          config.codex.turn_timeout_ms,
+          issue.id,
+        )
         |> result.map_error(fn(e) { errors.AgentFailure(e) }),
       )
       case turn_result.status {

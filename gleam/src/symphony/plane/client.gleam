@@ -25,7 +25,32 @@ pub fn api_url(
   base <> "/api/v1/workspaces/" <> workspace_slug <> "/projects/" <> project_id
 }
 
-/// List issues filtered by state names
+/// Build the issues list URL, optionally appending a cursor query parameter.
+pub fn build_issues_url(
+  endpoint: String,
+  workspace_slug: String,
+  project_id: String,
+  cursor: option.Option(String),
+) -> String {
+  let base = api_url(endpoint, workspace_slug, project_id)
+  let base_url = base <> "/issues/"
+  case cursor {
+    None -> base_url
+    Some(c) -> base_url <> "?cursor=" <> c
+  }
+}
+
+/// Decode the `next` cursor value from a paginated response body.
+/// Returns `None` when the `next` field is absent or null.
+pub fn decode_next_cursor(body: String) -> option.Option(String) {
+  let decoder = dynamic.field("next", dynamic.optional(dynamic.string))
+  case json.decode(body, decoder) {
+    Ok(Some(url)) if url != "" && url != "null" -> Some(url)
+    _ -> None
+  }
+}
+
+/// List issues filtered by state names, fetching all pages via cursor pagination.
 pub fn list_issues(
   endpoint: String,
   api_key: String,
@@ -33,16 +58,36 @@ pub fn list_issues(
   project_id: String,
   state_names: List(String),
 ) -> Result(List(plane_types.PlaneWorkItem), errors.TrackerError) {
-  let base = api_url(endpoint, workspace_slug, project_id)
-  let url = base <> "/issues/"
+  use all_items <- result.try(
+    fetch_all_pages(endpoint, api_key, workspace_slug, project_id, None, []),
+  )
 
-  use response <- result.try(send_get(url, api_key, "list_issues"))
+  // Filter client-side by state name
+  let filtered = case state_names {
+    [] -> all_items
+    _ ->
+      list.filter(all_items, fn(item) {
+        list.contains(state_names, item.state_detail.name)
+      })
+  }
+
+  Ok(filtered)
+}
+
+/// Recursively fetch all pages of issues using cursor-based pagination.
+pub fn fetch_all_pages(
+  endpoint: String,
+  api_key: String,
+  workspace_slug: String,
+  project_id: String,
+  cursor: option.Option(String),
+  acc: List(plane_types.PlaneWorkItem),
+) -> Result(List(plane_types.PlaneWorkItem), errors.TrackerError) {
+  let url = build_issues_url(endpoint, workspace_slug, project_id, cursor)
+  use body <- result.try(send_get(url, api_key, "list_issues"))
 
   use items <- result.try(
-    json.decode(
-      response,
-      dynamic.field("results", dynamic.list(decode_work_item)),
-    )
+    json.decode(body, dynamic.field("results", dynamic.list(decode_work_item)))
     |> result.map_error(fn(_) {
       errors.ApiError(
         operation: "list_issues",
@@ -52,16 +97,21 @@ pub fn list_issues(
     }),
   )
 
-  // Filter client-side by state name
-  let filtered = case state_names {
-    [] -> items
-    _ ->
-      list.filter(items, fn(item) {
-        list.contains(state_names, item.state_detail.name)
-      })
-  }
+  let all = list.append(acc, items)
+  let next_cursor = decode_next_cursor(body)
 
-  Ok(filtered)
+  case next_cursor {
+    None -> Ok(all)
+    Some(_) ->
+      fetch_all_pages(
+        endpoint,
+        api_key,
+        workspace_slug,
+        project_id,
+        next_cursor,
+        all,
+      )
+  }
 }
 
 /// Get a single issue by ID
@@ -261,12 +311,14 @@ fn handle_response(
   case response.status {
     200 | 201 -> Ok(response.body)
     204 -> Ok("")
-    429 ->
+    429 -> {
+      let retry_after_ms = parse_retry_after_ms(response)
       Error(errors.RateLimit(
-        retry_after_ms: None,
+        retry_after_ms: retry_after_ms,
         scope: None,
         details: "Plane API rate limited during " <> operation,
       ))
+    }
     404 ->
       Error(errors.NotFound(
         resource: operation,
@@ -279,6 +331,19 @@ fn handle_response(
         details: "HTTP error: " <> int.to_string(status),
         status_code: Some(status),
       ))
+  }
+}
+
+/// Extract the Retry-After header value and convert seconds to milliseconds.
+/// Returns None if the header is absent or not a valid integer.
+fn parse_retry_after_ms(response: Response(String)) -> option.Option(Int) {
+  case list.key_find(response.headers, "retry-after") {
+    Ok(value) ->
+      case int.parse(string.trim(value)) {
+        Ok(seconds) -> Some(seconds * 1000)
+        Error(_) -> None
+      }
+    Error(_) -> None
   }
 }
 

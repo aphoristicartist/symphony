@@ -5,9 +5,14 @@ import gleam/string
 import gleeunit
 import gleeunit/should
 import simplifile
+import symphony/claude_code/event_parser
 import symphony/codex/app_server
+import symphony/codex/dynamic_tool
 import symphony/config
 import symphony/errors
+import symphony/persistence
+import symphony/plane/normalizer
+import symphony/plane/types as plane_types
 import symphony/template
 import symphony/types
 import symphony/validation
@@ -386,6 +391,11 @@ fn empty_orchestrator_state() -> types.OrchestratorState {
       seconds_running: 0.0,
     ),
     codex_rate_limits: None,
+    tracker_adapter: None,
+    agent_adapter: None,
+    agent_kind: None,
+    last_cleanup_at: None,
+    tick_count: 0,
   )
 }
 
@@ -726,4 +736,498 @@ pub fn issue_can_be_created_with_minimal_fields_test() {
 
   issue.identifier
   |> should.equal("TEST-1")
+}
+
+// ============================================================================
+// Error Types Tests (Plan 1.1)
+// ============================================================================
+
+pub fn error_tracker_write_error_message_test() {
+  errors.tracker_error_message(errors.WriteError(
+    operation: "create_comment",
+    resource_id: "ISSUE-42",
+    details: "permission denied",
+  ))
+  |> should.equal(
+    "Tracker write error in create_comment for ISSUE-42: permission denied",
+  )
+}
+
+pub fn error_stall_detected_message_test() {
+  errors.agent_error_message(errors.StallDetected(
+    issue_id: "issue-123",
+    last_event_ms: Some(5000),
+    stall_timeout_ms: 300_000,
+    details: "no events received",
+  ))
+  |> should.equal(
+    "Agent stall detected for issue issue-123 (last event: 5000ms ago, timeout: 300000ms): no events received",
+  )
+}
+
+pub fn error_persistence_write_failed_test() {
+  errors.persistence_error_message(errors.WriteFailed(
+    path: "/tmp/symphony_state.json",
+    details: "disk full",
+  ))
+  |> should.equal("State write failed for /tmp/symphony_state.json: disk full")
+}
+
+pub fn error_run_error_persistence_failure_test() {
+  errors.run_error_message(
+    errors.PersistenceFailure(errors.ReadFailed(
+      path: "/data/state.json",
+      details: "file not found",
+    )),
+  )
+  |> should.equal("State read failed for /data/state.json: file not found")
+}
+
+// ============================================================================
+// Validation New Kinds Tests (Plan 1.4)
+// ============================================================================
+
+pub fn validation_tracker_kind_linear_test() {
+  validation.parse_tracker_kind("linear")
+  |> should.equal(Ok(types.Linear))
+}
+
+pub fn validation_tracker_kind_plane_test() {
+  validation.parse_tracker_kind("plane")
+  |> should.equal(Ok(types.Plane))
+}
+
+pub fn validation_tracker_kind_unknown_test() {
+  validation.parse_tracker_kind("jira")
+  |> should.be_error()
+}
+
+pub fn validation_agent_kind_codex_test() {
+  validation.parse_agent_kind("codex")
+  |> should.equal(Ok(types.Codex))
+}
+
+pub fn validation_agent_kind_claude_code_test() {
+  validation.parse_agent_kind("claude-code")
+  |> should.equal(Ok(types.ClaudeCode))
+}
+
+pub fn validation_agent_kind_goose_test() {
+  validation.parse_agent_kind("goose")
+  |> should.equal(Ok(types.Goose))
+}
+
+pub fn validation_agent_kind_unknown_test() {
+  validation.parse_agent_kind("cursor")
+  |> should.be_error()
+}
+
+// ============================================================================
+// Config New Fields Tests (Plan 1.2)
+// ============================================================================
+
+pub fn config_load_with_agent_kind_test() {
+  let path = "/tmp/symphony_gleam_workflow_agent_kind.md"
+  let content =
+    "---\n"
+    <> "tracker:\n"
+    <> "  kind: linear\n"
+    <> "  api_key: test-key\n"
+    <> "  project_slug: CORE\n"
+    <> "polling:\n"
+    <> "  interval_ms: 1000\n"
+    <> "workspace:\n"
+    <> "  root: /tmp/symphony_ws\n"
+    <> "agent:\n"
+    <> "  kind: claude-code\n"
+    <> "  max_concurrent_agents: 2\n"
+    <> "  max_turns: 5\n"
+    <> "  allowed_tools: Read,Edit,Bash\n"
+    <> "  permission_mode: bypassPermissions\n"
+    <> "codex:\n"
+    <> "  command: codex app-server\n"
+    <> "  turn_timeout_ms: 60000\n"
+    <> "prompt_template: Work on {{ issue.identifier }}\n"
+    <> "---\n"
+
+  let assert Ok(Nil) = simplifile.write(to: path, contents: content)
+  let assert Ok(cfg) = config.load(path)
+
+  cfg.agent.kind
+  |> should.equal("claude-code")
+
+  cfg.agent.allowed_tools
+  |> should.equal(Some("Read,Edit,Bash"))
+
+  cfg.agent.permission_mode
+  |> should.equal(Some("bypassPermissions"))
+}
+
+pub fn config_load_plane_tracker_fields_test() {
+  let path = "/tmp/symphony_gleam_workflow_plane.md"
+  let content =
+    "---\n"
+    <> "tracker:\n"
+    <> "  kind: plane\n"
+    <> "  api_key: plane-key\n"
+    <> "  endpoint: http://localhost:8080\n"
+    <> "  workspace_slug: my-workspace\n"
+    <> "  project_id: abc-123\n"
+    <> "  project_slug: PROJ\n"
+    <> "polling:\n"
+    <> "  interval_ms: 5000\n"
+    <> "workspace:\n"
+    <> "  root: /tmp/symphony_ws\n"
+    <> "agent:\n"
+    <> "  kind: codex\n"
+    <> "  max_concurrent_agents: 1\n"
+    <> "  max_turns: 3\n"
+    <> "codex:\n"
+    <> "  command: codex app-server\n"
+    <> "  turn_timeout_ms: 30000\n"
+    <> "prompt_template: Fix {{ issue.identifier }}\n"
+    <> "---\n"
+
+  let assert Ok(Nil) = simplifile.write(to: path, contents: content)
+  let assert Ok(cfg) = config.load(path)
+
+  cfg.tracker.kind
+  |> should.equal("plane")
+
+  cfg.tracker.endpoint
+  |> should.equal(Some("http://localhost:8080"))
+
+  cfg.tracker.workspace_slug
+  |> should.equal(Some("my-workspace"))
+
+  cfg.tracker.project_id
+  |> should.equal(Some("abc-123"))
+}
+
+// ============================================================================
+// Plane Normalizer Tests (Plan 3.2)
+// ============================================================================
+
+pub fn plane_normalizer_build_identifier_test() {
+  normalizer.build_identifier("PROJ", 42)
+  |> should.equal("PROJ-42")
+}
+
+pub fn plane_normalizer_priority_urgent_test() {
+  normalizer.normalize_priority(Some("urgent"))
+  |> should.equal(Some(1))
+}
+
+pub fn plane_normalizer_priority_high_test() {
+  normalizer.normalize_priority(Some("high"))
+  |> should.equal(Some(2))
+}
+
+pub fn plane_normalizer_priority_none_test() {
+  normalizer.normalize_priority(None)
+  |> should.equal(Some(0))
+}
+
+pub fn plane_normalizer_normalize_issue_test() {
+  let item =
+    plane_types.PlaneWorkItem(
+      id: "uuid-1",
+      sequence_id: 7,
+      project_identifier: "FEAT",
+      name: "My feature",
+      description_html: Some("<p>desc</p>"),
+      priority: Some("high"),
+      state_detail: plane_types.PlaneStateDetail(
+        id: "state-uuid",
+        name: "In Progress",
+        group: "started",
+      ),
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: "2024-01-02T00:00:00Z",
+      label_details: [plane_types.PlaneLabel(id: "l1", name: "backend")],
+    )
+
+  let issue = normalizer.normalize_issue(item)
+
+  issue.identifier
+  |> should.equal("FEAT-7")
+
+  issue.state
+  |> should.equal("In Progress")
+
+  issue.priority
+  |> should.equal(Some(2))
+
+  issue.labels
+  |> should.equal(["backend"])
+}
+
+// ============================================================================
+// Claude Code Event Parser Tests (Plan 2.3)
+// ============================================================================
+
+pub fn claude_code_parse_init_event_test() {
+  let payload = "{\"type\":\"init\",\"session_id\":\"sess-abc-123\"}"
+
+  let assert event_parser.InitEvent(session_id: sid) =
+    event_parser.parse_event(payload)
+
+  sid
+  |> should.equal("sess-abc-123")
+}
+
+pub fn claude_code_parse_text_delta_test() {
+  let payload = "{\"type\":\"text\",\"content\":\"Hello!\"}"
+
+  let assert event_parser.TextDelta(content: content) =
+    event_parser.parse_event(payload)
+
+  content
+  |> should.equal("Hello!")
+}
+
+pub fn claude_code_parse_usage_event_test() {
+  let payload = "{\"type\":\"usage\",\"input_tokens\":150,\"output_tokens\":42}"
+
+  let assert event_parser.UsageEvent(input_tokens: input, output_tokens: output) =
+    event_parser.parse_event(payload)
+
+  input
+  |> should.equal(150)
+
+  output
+  |> should.equal(42)
+}
+
+pub fn claude_code_parse_result_event_test() {
+  let payload =
+    "{\"type\":\"result\",\"output\":\"Done!\",\"session_id\":\"sess-xyz\"}"
+
+  let assert event_parser.ResultEvent(output: output, session_id: sid) =
+    event_parser.parse_event(payload)
+
+  output
+  |> should.equal("Done!")
+
+  sid
+  |> should.equal("sess-xyz")
+}
+
+pub fn claude_code_is_terminal_result_event_test() {
+  event_parser.is_terminal_event(event_parser.ResultEvent(
+    output: "done",
+    session_id: "s",
+  ))
+  |> should.equal(True)
+}
+
+pub fn claude_code_is_not_terminal_text_delta_test() {
+  event_parser.is_terminal_event(event_parser.TextDelta(content: "hi"))
+  |> should.equal(False)
+}
+
+pub fn claude_code_token_usage_from_usage_event_test() {
+  event_parser.token_usage(event_parser.UsageEvent(
+    input_tokens: 10,
+    output_tokens: 5,
+  ))
+  |> should.equal(Some(#(10, 5)))
+}
+
+pub fn claude_code_session_id_empty_string_is_none_test() {
+  event_parser.session_id(event_parser.InitEvent(session_id: ""))
+  |> should.equal(None)
+}
+
+// ============================================================================
+// Dynamic Tool Tests (Plan 1.4)
+// ============================================================================
+
+pub fn dynamic_tool_unsupported_tool_test() {
+  let tool_call =
+    dynamic_tool.ToolCall(name: "unknown_tool", arguments: dict.new())
+
+  let cfg = make_test_config()
+  let result = dynamic_tool.execute(tool_call, cfg)
+
+  result.success
+  |> should.equal(False)
+
+  string.contains(result.output, "Unsupported")
+  |> should.equal(True)
+}
+
+// ============================================================================
+// Persistence Tests (Plan 1.7)
+// ============================================================================
+
+pub fn persistence_encode_decode_roundtrip_test() {
+  let state = make_state_with_data()
+  let json_str = persistence.encode_state(state)
+
+  let assert Ok(restored) = persistence.decode_state(json_str)
+
+  restored.tick_count
+  |> should.equal(42)
+
+  set.contains(restored.completed, "issue-1")
+  |> should.equal(True)
+
+  restored.codex_totals.input_tokens
+  |> should.equal(100)
+}
+
+pub fn persistence_decode_empty_json_uses_defaults_test() {
+  let assert Ok(state) = persistence.decode_state("{}")
+
+  state.tick_count
+  |> should.equal(0)
+
+  set.is_empty(state.completed)
+  |> should.equal(True)
+}
+
+pub fn persistence_decode_invalid_json_returns_error_test() {
+  persistence.decode_state("not json")
+  |> should.be_error()
+}
+
+pub fn persistence_save_and_load_roundtrip_test() {
+  let dir = "/tmp/symphony_gleam_persistence_test"
+  let assert Ok(_) = simplifile.create_directory_all(dir)
+
+  let state = make_state_with_data()
+  let assert Ok(Nil) = persistence.save_snapshot(state, dir)
+
+  let assert Ok(loaded) = persistence.load_snapshot(dir)
+
+  loaded.tick_count
+  |> should.equal(42)
+
+  set.contains(loaded.completed, "issue-1")
+  |> should.equal(True)
+}
+
+pub fn persistence_load_missing_file_returns_empty_state_test() {
+  let dir = "/tmp/symphony_gleam_persistence_never_written"
+
+  let assert Ok(state) = persistence.load_snapshot(dir)
+
+  state.tick_count
+  |> should.equal(0)
+}
+
+// ============================================================================
+// Types: New Fields Tests
+// ============================================================================
+
+pub fn types_agent_kind_variants_test() {
+  types.Codex
+  |> should.equal(types.Codex)
+
+  types.ClaudeCode
+  |> should.equal(types.ClaudeCode)
+
+  types.Goose
+  |> should.equal(types.Goose)
+}
+
+pub fn types_turn_result_with_usage_test() {
+  let result =
+    types.TurnResult(
+      status: types.TurnSucceeded,
+      token_usage: Some(types.TokenSnapshot(
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+      )),
+      session_id: Some("sess-1"),
+      output: Some("task complete"),
+    )
+
+  result.status
+  |> should.equal(types.TurnSucceeded)
+
+  result.session_id
+  |> should.equal(Some("sess-1"))
+}
+
+pub fn types_orchestrator_state_new_fields_test() {
+  let state = empty_orchestrator_state()
+
+  state.tick_count
+  |> should.equal(0)
+
+  state.tracker_adapter
+  |> should.equal(None)
+
+  state.last_cleanup_at
+  |> should.equal(None)
+}
+
+// ============================================================================
+// Additional Test Helpers
+// ============================================================================
+
+fn make_test_config() -> config.Config {
+  config.Config(
+    tracker: config.TrackerConfig(
+      kind: "linear",
+      api_key: "test-key",
+      project_slug: "TEST",
+      active_states: ["Todo", "In Progress"],
+      terminal_states: ["Done"],
+      endpoint: None,
+      workspace_slug: None,
+      project_id: None,
+    ),
+    polling: config.PollingConfig(interval_ms: 5000),
+    workspace: config.WorkspaceConfig(root: "/tmp/test"),
+    hooks: config.HooksConfig(
+      after_create: None,
+      before_run: None,
+      after_run: None,
+      before_remove: None,
+      timeout_ms: 5000,
+    ),
+    agent: config.AgentConfig(
+      kind: "codex",
+      command: None,
+      max_concurrent_agents: 1,
+      max_turns: 5,
+      allowed_tools: None,
+      permission_mode: None,
+      provider: None,
+      model: None,
+      builtins: None,
+    ),
+    codex: config.CodexConfig(
+      command: "codex app-server",
+      turn_timeout_ms: 60_000,
+    ),
+    prompt_template: "Work on {{ issue.identifier }}",
+  )
+}
+
+fn make_state_with_data() -> types.OrchestratorState {
+  types.OrchestratorState(
+    poll_interval_ms: 5000,
+    max_concurrent_agents: 2,
+    running: dict.new(),
+    claimed: set.new(),
+    retry_attempts: dict.new(),
+    completed: set.from_list(["issue-1", "issue-2"]),
+    codex_totals: types.CodexTotals(
+      input_tokens: 100,
+      output_tokens: 50,
+      total_tokens: 150,
+      seconds_running: 10.0,
+    ),
+    codex_rate_limits: None,
+    tracker_adapter: None,
+    agent_adapter: None,
+    agent_kind: Some(types.Codex),
+    last_cleanup_at: None,
+    tick_count: 42,
+  )
 }

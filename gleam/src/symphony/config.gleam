@@ -9,7 +9,7 @@ import gleam/string
 import simplifile
 import symphony/errors
 
-/// Configuration for the issue tracker (Linear)
+/// Configuration for the issue tracker (Linear or Plane)
 pub type TrackerConfig {
   TrackerConfig(
     kind: String,
@@ -17,6 +17,9 @@ pub type TrackerConfig {
     project_slug: String,
     active_states: List(String),
     terminal_states: List(String),
+    endpoint: option.Option(String),
+    workspace_slug: option.Option(String),
+    project_id: option.Option(String),
   )
 }
 
@@ -43,7 +46,17 @@ pub type HooksConfig {
 
 /// Configuration for agent behavior
 pub type AgentConfig {
-  AgentConfig(max_concurrent_agents: Int, max_turns: Int)
+  AgentConfig(
+    kind: String,
+    command: option.Option(String),
+    max_concurrent_agents: Int,
+    max_turns: Int,
+    allowed_tools: option.Option(String),
+    permission_mode: option.Option(String),
+    provider: option.Option(String),
+    model: option.Option(String),
+    builtins: option.Option(String),
+  )
 }
 
 /// Configuration for Codex integration
@@ -280,10 +293,21 @@ fn build_tracker_config(
     "api_key",
     "tracker.api_key",
   ))
-  use project_slug <- result.try(get_string_required(
+  let project_slug = get_string_with_default(tracker_dict, "project_slug", "")
+  use endpoint <- result.try(get_optional_string(
     tracker_dict,
-    "project_slug",
-    "tracker.project_slug",
+    "endpoint",
+    "tracker.endpoint",
+  ))
+  use workspace_slug <- result.try(get_optional_string(
+    tracker_dict,
+    "workspace_slug",
+    "tracker.workspace_slug",
+  ))
+  use project_id <- result.try(get_optional_string(
+    tracker_dict,
+    "project_id",
+    "tracker.project_id",
   ))
   let active_states =
     get_string_list_with_default(tracker_dict, "active_states", [
@@ -304,6 +328,9 @@ fn build_tracker_config(
     project_slug: project_slug,
     active_states: active_states,
     terminal_states: terminal_states,
+    endpoint: endpoint,
+    workspace_slug: workspace_slug,
+    project_id: project_id,
   ))
 }
 
@@ -373,13 +400,51 @@ fn build_agent_config(
 ) -> Result(AgentConfig, errors.ConfigError) {
   use agent_dict <- result.try(get_dict(dict, "agent"))
 
+  let kind = get_string_with_default(agent_dict, "kind", "codex")
+  use command <- result.try(get_optional_string(
+    agent_dict,
+    "command",
+    "agent.command",
+  ))
   let max_concurrent_agents =
     get_int_with_default(agent_dict, "max_concurrent_agents", 10)
   let max_turns = get_int_with_default(agent_dict, "max_turns", 20)
+  use allowed_tools <- result.try(get_optional_string(
+    agent_dict,
+    "allowed_tools",
+    "agent.allowed_tools",
+  ))
+  use permission_mode <- result.try(get_optional_string(
+    agent_dict,
+    "permission_mode",
+    "agent.permission_mode",
+  ))
+  use provider <- result.try(get_optional_string(
+    agent_dict,
+    "provider",
+    "agent.provider",
+  ))
+  use model <- result.try(get_optional_string(
+    agent_dict,
+    "model",
+    "agent.model",
+  ))
+  use builtins <- result.try(get_optional_string(
+    agent_dict,
+    "builtins",
+    "agent.builtins",
+  ))
 
   Ok(AgentConfig(
+    kind: kind,
+    command: command,
     max_concurrent_agents: max_concurrent_agents,
     max_turns: max_turns,
+    allowed_tools: allowed_tools,
+    permission_mode: permission_mode,
+    provider: provider,
+    model: model,
+    builtins: builtins,
   ))
 }
 

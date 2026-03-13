@@ -50,6 +50,7 @@ pub type TrackerError {
   ApiError(operation: String, details: String, status_code: Option(Int))
   RateLimit(retry_after_ms: Option(Int), scope: Option(String), details: String)
   NotFound(resource: String, identifier: Option(String), details: String)
+  WriteError(operation: String, resource_id: String, details: String)
 }
 
 /// Agent execution failures.
@@ -57,6 +58,12 @@ pub type AgentError {
   LaunchFailed(command: String, workspace_path: String, details: String)
   Timeout(operation: String, timeout_ms: Int, details: String)
   ProtocolError(event: Option(String), details: String)
+  StallDetected(
+    issue_id: String,
+    last_event_ms: Option(Int),
+    stall_timeout_ms: Int,
+    details: String,
+  )
 }
 
 /// Orchestrator coordination failures.
@@ -74,6 +81,15 @@ pub type OrchestrationError {
   )
 }
 
+/// Persistence failures for state snapshots.
+pub type PersistenceError {
+  SerializationFailed(details: String)
+  DeserializationFailed(path: String, details: String)
+  WriteFailed(path: String, details: String)
+  ReadFailed(path: String, details: String)
+  CorruptSnapshot(path: String, details: String)
+}
+
 /// Unified runtime failure surface.
 pub type RunError {
   ConfigFailure(ConfigError)
@@ -81,6 +97,7 @@ pub type RunError {
   TrackerFailure(TrackerError)
   AgentFailure(AgentError)
   OrchestrationFailure(OrchestrationError)
+  PersistenceFailure(PersistenceError)
 }
 
 /// Deterministic human-readable message for validation failures.
@@ -158,6 +175,13 @@ pub fn tracker_error_message(error: TrackerError) -> String {
         None -> "Tracker resource not found: " <> resource <> " - " <> details
       }
     }
+    WriteError(operation, resource_id, details) ->
+      "Tracker write error in "
+      <> operation
+      <> " for "
+      <> resource_id
+      <> ": "
+      <> details
   }
 }
 
@@ -229,6 +253,20 @@ pub fn agent_error_message(error: AgentError) -> String {
         None -> "Agent protocol error: " <> details
       }
     }
+    StallDetected(issue_id, last_event_ms, stall_timeout_ms, details) -> {
+      let last_text = case last_event_ms {
+        Some(ms) -> int.to_string(ms) <> "ms ago"
+        None -> "never"
+      }
+      "Agent stall detected for issue "
+      <> issue_id
+      <> " (last event: "
+      <> last_text
+      <> ", timeout: "
+      <> int.to_string(stall_timeout_ms)
+      <> "ms): "
+      <> details
+    }
   }
 }
 
@@ -270,6 +308,21 @@ pub fn orchestration_error_message(error: OrchestrationError) -> String {
   }
 }
 
+/// Deterministic human-readable message for persistence failures.
+pub fn persistence_error_message(error: PersistenceError) -> String {
+  case error {
+    SerializationFailed(details) -> "State serialization failed: " <> details
+    DeserializationFailed(path, details) ->
+      "State deserialization failed for " <> path <> ": " <> details
+    WriteFailed(path, details) ->
+      "State write failed for " <> path <> ": " <> details
+    ReadFailed(path, details) ->
+      "State read failed for " <> path <> ": " <> details
+    CorruptSnapshot(path, details) ->
+      "Corrupt state snapshot at " <> path <> ": " <> details
+  }
+}
+
 /// Deterministic human-readable message for runtime failures.
 pub fn run_error_message(error: RunError) -> String {
   case error {
@@ -278,6 +331,7 @@ pub fn run_error_message(error: RunError) -> String {
     TrackerFailure(error) -> tracker_error_message(error)
     AgentFailure(error) -> agent_error_message(error)
     OrchestrationFailure(error) -> orchestration_error_message(error)
+    PersistenceFailure(error) -> persistence_error_message(error)
   }
 }
 

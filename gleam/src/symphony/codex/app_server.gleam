@@ -650,12 +650,7 @@ fn replace_codex_metrics(
   codex_rate_limits: Option(types.CodexRateLimits),
 ) -> types.OrchestratorState {
   types.OrchestratorState(
-    poll_interval_ms: state.poll_interval_ms,
-    max_concurrent_agents: state.max_concurrent_agents,
-    running: state.running,
-    claimed: state.claimed,
-    retry_attempts: state.retry_attempts,
-    completed: state.completed,
+    ..state,
     codex_totals: codex_totals,
     codex_rate_limits: codex_rate_limits,
   )

@@ -8,6 +8,7 @@ import symphony/errors.{
   InvalidSessionComponent, MissingRequiredField, NonPositiveValue,
   OverlappingState, UnsupportedValue,
 }
+import symphony/types
 
 const workspace_safe_chars = [
   "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
@@ -91,6 +92,37 @@ pub fn compose_session_id(
 }
 
 /// Validate config invariants required for dispatch.
+/// Validate an agent kind string.
+pub fn validate_agent_kind(kind: String) -> Result(Nil, ValidationError) {
+  case normalize_state(kind) {
+    "codex" | "claude-code" | "goose" -> Ok(Nil)
+    _ -> Error(UnsupportedValue(field: "agent.kind", value: kind))
+  }
+}
+
+/// Parse an agent kind string into the typed enum.
+pub fn parse_agent_kind(
+  kind: String,
+) -> Result(types.AgentKind, ValidationError) {
+  case normalize_state(kind) {
+    "codex" -> Ok(types.Codex)
+    "claude-code" -> Ok(types.ClaudeCode)
+    "goose" -> Ok(types.Goose)
+    _ -> Error(UnsupportedValue(field: "agent.kind", value: kind))
+  }
+}
+
+/// Parse a tracker kind string into the typed enum.
+pub fn parse_tracker_kind(
+  kind: String,
+) -> Result(types.TrackerKind, ValidationError) {
+  case normalize_state(kind) {
+    "linear" -> Ok(types.Linear)
+    "plane" -> Ok(types.Plane)
+    _ -> Error(UnsupportedValue(field: "tracker.kind", value: kind))
+  }
+}
+
 pub fn validate_config(config: Config) -> Result(Config, ValidationError) {
   use _ <- result.try(validate_tracker_kind(config.tracker.kind))
   use _ <- result.try(require_non_empty(
@@ -99,7 +131,7 @@ pub fn validate_config(config: Config) -> Result(Config, ValidationError) {
   ))
   use _ <- result.try(validate_project_slug(config))
   use _ <- result.try(validate_state_lists(config))
-  use _ <- result.try(require_non_empty("codex.command", config.codex.command))
+  use _ <- result.try(validate_agent_kind(config.agent.kind))
   use _ <- result.try(validate_positive(
     "polling.interval_ms",
     config.polling.interval_ms,
@@ -128,7 +160,7 @@ pub fn validate_config(config: Config) -> Result(Config, ValidationError) {
 
 fn validate_tracker_kind(kind: String) -> Result(Nil, ValidationError) {
   case normalize_state(kind) {
-    "linear" -> Ok(Nil)
+    "linear" | "plane" -> Ok(Nil)
     _ -> Error(UnsupportedValue(field: "tracker.kind", value: kind))
   }
 }
@@ -137,8 +169,23 @@ fn validate_project_slug(config: Config) -> Result(Nil, ValidationError) {
   case normalize_state(config.tracker.kind) {
     "linear" ->
       require_non_empty("tracker.project_slug", config.tracker.project_slug)
-
+    "plane" -> validate_plane_config(config)
     _ -> Ok(Nil)
+  }
+}
+
+fn validate_plane_config(config: Config) -> Result(Nil, ValidationError) {
+  use _ <- result.try(case config.tracker.endpoint {
+    option.Some(endpoint) -> require_non_empty("tracker.endpoint", endpoint)
+    option.None -> Error(MissingRequiredField(field: "tracker.endpoint"))
+  })
+  use _ <- result.try(case config.tracker.workspace_slug {
+    option.Some(slug) -> require_non_empty("tracker.workspace_slug", slug)
+    option.None -> Error(MissingRequiredField(field: "tracker.workspace_slug"))
+  })
+  case config.tracker.project_id {
+    option.Some(id) -> require_non_empty("tracker.project_id", id)
+    option.None -> Error(MissingRequiredField(field: "tracker.project_id"))
   }
 }
 

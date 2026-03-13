@@ -35,7 +35,9 @@ pub fn main() {
           }
         }
         Error(e) -> {
-          io.println("Failed to load configuration: " <> errors.config_error_message(e))
+          io.println(
+            "Failed to load configuration: " <> errors.config_error_message(e),
+          )
           process.sleep(1000)
         }
       }
@@ -53,9 +55,9 @@ fn get_config_path() -> Result(String, errors.ConfigError) {
     Ok(path) -> Ok(path)
     Error(_) ->
       Error(
-        errors.ValidationFailed(
-          error: errors.MissingRequiredField(field: "WORKFLOW_PATH"),
-        ),
+        errors.ValidationFailed(error: errors.MissingRequiredField(
+          field: "WORKFLOW_PATH",
+        )),
       )
   }
 }

@@ -4,6 +4,97 @@ import gleam/option.{type Option}
 import gleam/set.{type Set}
 import symphony/errors.{type RunError}
 
+// ============================================================================
+// Agent Abstraction Types
+// ============================================================================
+
+/// Supported coding agent backends.
+pub type AgentKind {
+  Codex
+  ClaudeCode
+  Goose
+}
+
+/// Status of a completed turn.
+pub type TurnStatus {
+  TurnSucceeded
+  TurnFailed(reason: String)
+  TurnCancelled
+}
+
+/// Result from a single agent turn.
+pub type TurnResult {
+  TurnResult(
+    status: TurnStatus,
+    token_usage: Option(TokenSnapshot),
+    session_id: Option(String),
+    output: Option(String),
+  )
+}
+
+/// Snapshot of token usage from an agent event.
+pub type TokenSnapshot {
+  TokenSnapshot(input_tokens: Int, output_tokens: Int, total_tokens: Int)
+}
+
+/// Configuration for starting an agent session.
+pub type AgentSessionConfig {
+  AgentSessionConfig(
+    command: String,
+    workspace_path: String,
+    issue_identifier: String,
+    agent_kind: AgentKind,
+    max_turns: Int,
+    turn_timeout_ms: Int,
+    allowed_tools: Option(String),
+    permission_mode: Option(String),
+    resume_session_id: Option(String),
+  )
+}
+
+/// Handle to a running agent session.
+pub type AgentSession {
+  AgentSession(
+    session_id: Option(String),
+    agent_kind: AgentKind,
+    process_handle: Dynamic,
+  )
+}
+
+/// Record-of-functions adapter for coding agent backends.
+pub type AgentAdapter {
+  AgentAdapter(
+    start_session: fn(AgentSessionConfig) ->
+      Result(AgentSession, errors.AgentError),
+    run_turn: fn(AgentSession, String) -> Result(TurnResult, errors.AgentError),
+    stop_session: fn(AgentSession) -> Result(Nil, errors.AgentError),
+  )
+}
+
+// ============================================================================
+// Tracker Abstraction Types
+// ============================================================================
+
+/// Supported issue tracker backends.
+pub type TrackerKind {
+  Linear
+  Plane
+}
+
+/// Record-of-functions adapter for issue tracker backends.
+pub type TrackerAdapter {
+  TrackerAdapter(
+    fetch_candidate_issues: fn(Dynamic) ->
+      Result(List(Issue), errors.TrackerError),
+    fetch_issue_states_by_ids: fn(Dynamic, List(String)) ->
+      Result(List(Issue), errors.TrackerError),
+    create_comment: fn(Dynamic, String, String) ->
+      Result(Nil, errors.TrackerError),
+    update_issue_state: fn(Dynamic, String, String) ->
+      Result(Nil, errors.TrackerError),
+  )
+}
+
 /// Normalized issue record used by orchestration and prompt rendering.
 pub type Issue {
   Issue(
@@ -215,5 +306,10 @@ pub type OrchestratorState {
     completed: Set(String),
     codex_totals: CodexTotals,
     codex_rate_limits: Option(CodexRateLimits),
+    tracker_adapter: Option(TrackerAdapter),
+    agent_adapter: Option(AgentAdapter),
+    agent_kind: Option(AgentKind),
+    last_cleanup_at: Option(Int),
+    tick_count: Int,
   )
 }

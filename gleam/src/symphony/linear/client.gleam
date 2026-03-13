@@ -15,7 +15,9 @@ import symphony/types.{type BlockerRef, type Issue, BlockerRef, Issue}
 const linear_api_url = "https://api.linear.app/graphql"
 
 /// Fetch active issues from Linear
-pub fn fetch_active_issues(config: Config) -> Result(List(Issue), errors.TrackerError) {
+pub fn fetch_active_issues(
+  config: Config,
+) -> Result(List(Issue), errors.TrackerError) {
   let query = build_active_issues_query(config.tracker.project_slug)
   let req = build_graphql_request(config.tracker.api_key, query)
 
@@ -60,8 +62,8 @@ pub fn fetch_issue_state(
 /// Build GraphQL query for active issues
 fn build_active_issues_query(project_slug: String) -> String {
   "query { issues(filter: { project: { identifier: { eq: \""
-    <> project_slug
-    <> "\" } } }) { nodes { id identifier title description state { name } priority branchName url labels { nodes { name } } blockedBy { nodes { id identifier state { name } } } createdAt updatedAt } } }"
+  <> project_slug
+  <> "\" } } }) { nodes { id identifier title description state { name } priority branchName url labels { nodes { name } } blockedBy { nodes { id identifier state { name } } } createdAt updatedAt } } }"
 }
 
 /// Build GraphQL query for issue state
@@ -97,22 +99,18 @@ fn parse_graphql_response(
       })
     }
     429 -> {
-      Error(
-        errors.RateLimit(
-          retry_after_ms: option.None,
-          scope: option.None,
-          details: "Linear API returned HTTP 429",
-        ),
-      )
+      Error(errors.RateLimit(
+        retry_after_ms: option.None,
+        scope: option.None,
+        details: "Linear API returned HTTP 429",
+      ))
     }
     _ -> {
-      Error(
-        errors.ApiError(
-          operation: "graphql_request",
-          details: "HTTP error: " <> int.to_string(response.status),
-          status_code: option.Some(response.status),
-        ),
-      )
+      Error(errors.ApiError(
+        operation: "graphql_request",
+        details: "HTTP error: " <> int.to_string(response.status),
+        status_code: option.Some(response.status),
+      ))
     }
   }
 }
@@ -122,24 +120,23 @@ fn extract_issues_from_response(
   body: dynamic.Dynamic,
 ) -> Result(List(Issue), errors.TrackerError) {
   // Navigate the response structure: data.issues.nodes
-  let decoder = dynamic.field(
-    "data",
+  let decoder =
     dynamic.field(
-      "issues",
-      dynamic.field("nodes", dynamic.list(decode_issue)),
-    ),
-  )
+      "data",
+      dynamic.field(
+        "issues",
+        dynamic.field("nodes", dynamic.list(decode_issue)),
+      ),
+    )
 
   case decoder(body) {
     Ok(issues) -> Ok(issues)
     Error(_) ->
-      Error(
-        errors.ApiError(
-          operation: "decode_active_issues",
-          details: "Failed to decode issues from response",
-          status_code: option.None,
-        ),
-      )
+      Error(errors.ApiError(
+        operation: "decode_active_issues",
+        details: "Failed to decode issues from response",
+        status_code: option.None,
+      ))
   }
 }
 
@@ -148,65 +145,60 @@ fn extract_state_from_response(
   body: dynamic.Dynamic,
   issue_id: String,
 ) -> Result(String, errors.TrackerError) {
-  let decoder = dynamic.field(
-    "data",
+  let decoder =
     dynamic.field(
-      "issue",
-      dynamic.field("state", dynamic.field("name", dynamic.string)),
-    ),
-  )
+      "data",
+      dynamic.field(
+        "issue",
+        dynamic.field("state", dynamic.field("name", dynamic.string)),
+      ),
+    )
 
   case decoder(body) {
     Ok(state) -> Ok(state)
     Error(_) ->
-      Error(
-        errors.NotFound(
-          resource: "issue",
-          identifier: option.Some(issue_id),
-          details: "Failed to decode issue state from response",
-        ),
-      )
+      Error(errors.NotFound(
+        resource: "issue",
+        identifier: option.Some(issue_id),
+        details: "Failed to decode issue state from response",
+      ))
   }
 }
 
 /// Decode an Issue from dynamic
-fn decode_issue(dyn: dynamic.Dynamic) -> Result(Issue, List(dynamic.DecodeError)) {
+fn decode_issue(
+  dyn: dynamic.Dynamic,
+) -> Result(Issue, List(dynamic.DecodeError)) {
   let id_decoder = dynamic.field("id", dynamic.string)
   let identifier_decoder = dynamic.field("identifier", dynamic.string)
   let title_decoder = dynamic.field("title", dynamic.string)
-  let description_decoder = dynamic.optional_field(
-    "description",
-    dynamic.optional(dynamic.string),
-  )
-  let state_decoder = dynamic.field(
-    "state",
-    dynamic.field("name", dynamic.string),
-  )
-  let priority_decoder = dynamic.optional_field(
-    "priority",
-    dynamic.optional(dynamic.int),
-  )
-  let branch_name_decoder = dynamic.optional_field(
-    "branchName",
-    dynamic.optional(dynamic.string),
-  )
-  let url_decoder = dynamic.optional_field("url", dynamic.optional(dynamic.string))
-  let labels_decoder = dynamic.field(
-    "labels",
-    dynamic.field("nodes", dynamic.list(dynamic.field("name", dynamic.string))),
-  )
-  let blocked_by_decoder = dynamic.field(
-    "blockedBy",
-    dynamic.field("nodes", dynamic.list(decode_blocker_ref)),
-  )
-  let created_at_decoder = dynamic.optional_field(
-    "createdAt",
-    dynamic.optional(dynamic.int),
-  )
-  let updated_at_decoder = dynamic.optional_field(
-    "updatedAt",
-    dynamic.optional(dynamic.int),
-  )
+  let description_decoder =
+    dynamic.optional_field("description", dynamic.optional(dynamic.string))
+  let state_decoder =
+    dynamic.field("state", dynamic.field("name", dynamic.string))
+  let priority_decoder =
+    dynamic.optional_field("priority", dynamic.optional(dynamic.int))
+  let branch_name_decoder =
+    dynamic.optional_field("branchName", dynamic.optional(dynamic.string))
+  let url_decoder =
+    dynamic.optional_field("url", dynamic.optional(dynamic.string))
+  let labels_decoder =
+    dynamic.field(
+      "labels",
+      dynamic.field(
+        "nodes",
+        dynamic.list(dynamic.field("name", dynamic.string)),
+      ),
+    )
+  let blocked_by_decoder =
+    dynamic.field(
+      "blockedBy",
+      dynamic.field("nodes", dynamic.list(decode_blocker_ref)),
+    )
+  let created_at_decoder =
+    dynamic.optional_field("createdAt", dynamic.optional(dynamic.int))
+  let updated_at_decoder =
+    dynamic.optional_field("updatedAt", dynamic.optional(dynamic.int))
 
   use id <- result.try(id_decoder(dyn))
   use identifier <- result.try(identifier_decoder(dyn))
@@ -243,18 +235,15 @@ fn decode_blocker_ref(
 ) -> Result(BlockerRef, List(dynamic.DecodeError)) {
   let id_decoder = dynamic.optional_field("id", dynamic.string)
   let identifier_decoder = dynamic.optional_field("identifier", dynamic.string)
-  let state_decoder = dynamic.field(
-    "state",
-    dynamic.optional(dynamic.field("name", dynamic.string)),
-  )
+  let state_decoder =
+    dynamic.field(
+      "state",
+      dynamic.optional(dynamic.field("name", dynamic.string)),
+    )
 
   use id <- result.try(id_decoder(dyn))
   use identifier <- result.try(identifier_decoder(dyn))
   use state <- result.try(state_decoder(dyn))
 
-  Ok(BlockerRef(
-    id: id,
-    identifier: identifier,
-    state: state,
-  ))
+  Ok(BlockerRef(id: id, identifier: identifier, state: state))
 }

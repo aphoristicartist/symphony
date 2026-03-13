@@ -1,0 +1,44 @@
+name: gleam
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  gleam:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gleam
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          gleam-version: "1"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: gleam/build
+          key: ${{ runner.os }}-gleam-${{ hashFiles('gleam/manifest.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gleam-
+
+      - name: Download dependencies
+        run: gleam deps download
+
+      - name: Build
+        run: gleam build
+
+      - name: Test
+        run: gleam test
+
+      - name: Format check
+        run: gleam format --check src test

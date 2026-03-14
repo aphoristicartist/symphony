@@ -35,11 +35,13 @@ pub type TrackerConfig {
     project: option.Option(String),
     active_states: List(String),
     terminal_states: List(String),
+    command_timeout_ms: Int,
   )
   GitBugConfig(
     repo_dir: String,
     active_states: List(String),
     terminal_states: List(String),
+    command_timeout_ms: Int,
   )
 }
 
@@ -336,19 +338,25 @@ fn build_tracker_config(
         "" -> option.None
         p -> option.Some(p)
       }
+      let command_timeout_ms =
+        get_int_with_default(tracker_dict, "command_timeout_ms", 30_000)
       Ok(TaskwarriorConfig(
         project: project_opt,
         active_states: active_states,
         terminal_states: terminal_states,
+        command_timeout_ms: command_timeout_ms,
       ))
     }
-    "git-bug" | "gitbug" -> {
+    "git-bug" | "gitbug" | "git_bug" -> {
       let repo_dir =
         get_string_with_default(tracker_dict, "repo_dir", ".")
+      let command_timeout_ms =
+        get_int_with_default(tracker_dict, "command_timeout_ms", 30_000)
       Ok(GitBugConfig(
         repo_dir: repo_dir,
         active_states: active_states,
         terminal_states: terminal_states,
+        command_timeout_ms: command_timeout_ms,
       ))
     }
     "plane" -> {

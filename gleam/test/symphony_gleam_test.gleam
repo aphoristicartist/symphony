@@ -1974,12 +1974,14 @@ pub fn taskwarrior_config_fields_test() {
       project: option.Some("myproject"),
       active_states: ["pending"],
       terminal_states: ["completed", "deleted"],
+      command_timeout_ms: 30_000,
     )
   case cfg {
     config.TaskwarriorConfig(
       project: option.Some("myproject"),
       active_states: active,
       terminal_states: terminal,
+      command_timeout_ms: _,
     ) -> {
       active |> should.equal(["pending"])
       terminal |> should.equal(["completed", "deleted"])
@@ -2043,9 +2045,15 @@ pub fn gitbug_config_fields_test() {
       repo_dir: "/home/user/myrepo",
       active_states: ["open"],
       terminal_states: ["closed"],
+      command_timeout_ms: 30_000,
     )
   case cfg {
-    config.GitBugConfig(repo_dir: dir, active_states: active, terminal_states: terminal) -> {
+    config.GitBugConfig(
+      repo_dir: dir,
+      active_states: active,
+      terminal_states: terminal,
+      command_timeout_ms: _,
+    ) -> {
       dir |> should.equal("/home/user/myrepo")
       active |> should.equal(["open"])
       terminal |> should.equal(["closed"])

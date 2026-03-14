@@ -11,14 +11,17 @@ import symphony/gitbug/types as gb_types
 pub fn list_issues(
   repo_dir: String,
 ) -> Result(List(gb_types.GitBugIssue), errors.TrackerError) {
-  case run_git_bug(repo_dir, ["ls", "--format", "json"]) {
+  list_issues_timeout(repo_dir, 30_000)
+}
+
+/// List all issues with a configurable timeout (ms).
+pub fn list_issues_timeout(
+  repo_dir: String,
+  timeout_ms: Int,
+) -> Result(List(gb_types.GitBugIssue), errors.TrackerError) {
+  case run_git_bug_timeout(repo_dir, ["ls", "--format", "json"], timeout_ms) {
     Ok(output) -> decode_issues(output)
-    Error(msg) ->
-      Error(errors.ApiError(
-        operation: "gitbug.list_issues",
-        details: msg,
-        status_code: None,
-      ))
+    Error(msg) -> Error(shell_error("gitbug.list_issues", msg))
   }
 }
 
@@ -27,7 +30,16 @@ pub fn get_issue(
   repo_dir: String,
   id: String,
 ) -> Result(gb_types.GitBugIssue, errors.TrackerError) {
-  case run_git_bug(repo_dir, ["show", "--format", "json", id]) {
+  get_issue_timeout(repo_dir, id, 30_000)
+}
+
+/// Get a single issue with a configurable timeout (ms).
+pub fn get_issue_timeout(
+  repo_dir: String,
+  id: String,
+  timeout_ms: Int,
+) -> Result(gb_types.GitBugIssue, errors.TrackerError) {
+  case run_git_bug_timeout(repo_dir, ["show", "--format", "json", id], timeout_ms) {
     Ok(output) -> {
       use issues <- result.try(decode_issues(output))
       case issues {
@@ -40,12 +52,7 @@ pub fn get_issue(
           ))
       }
     }
-    Error(msg) ->
-      Error(errors.ApiError(
-        operation: "gitbug.get_issue",
-        details: msg,
-        status_code: None,
-      ))
+    Error(msg) -> Error(shell_error("gitbug.get_issue", msg))
   }
 }
 
@@ -92,16 +99,26 @@ pub fn add_comment(
 // Shell runner
 // ---------------------------------------------------------------------------
 
-/// Run `git bug <args>` in the given repo directory.
-fn run_git_bug(repo_dir: String, args: List(String)) -> Result(String, String) {
-  do_run_command_in_dir("git", ["bug", ..args], repo_dir)
+/// Run `git bug <args>` in the given repo directory with a configurable timeout.
+pub fn run_git_bug_timeout(
+  repo_dir: String,
+  args: List(String),
+  timeout_ms: Int,
+) -> Result(String, String) {
+  do_run_command_timeout("git", ["bug", ..args], repo_dir, timeout_ms)
 }
 
-@external(erlang, "symphony_shell_ffi", "run_command_in_dir")
-fn do_run_command_in_dir(
+/// Run `git bug <args>` in the given repo directory (default 30s timeout).
+fn run_git_bug(repo_dir: String, args: List(String)) -> Result(String, String) {
+  do_run_command_timeout("git", ["bug", ..args], repo_dir, 30_000)
+}
+
+@external(erlang, "symphony_shell_ffi", "run_command_in_dir_timeout")
+fn do_run_command_timeout(
   cmd: String,
   args: List(String),
   dir: String,
+  timeout_ms: Int,
 ) -> Result(String, String)
 
 // ---------------------------------------------------------------------------
@@ -191,5 +208,31 @@ pub fn state_to_git_bug_status(
   case list.contains(terminal_states, state) {
     True -> "close"
     False -> "open"
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Error helpers
+// ---------------------------------------------------------------------------
+
+/// Convert a shell error message to a TrackerError.
+/// Detects "command not found" / "not found" patterns and returns a helpful
+/// installation hint instead of a raw shell error.
+fn shell_error(operation: String, msg: String) -> errors.TrackerError {
+  let lower = string.lowercase(msg)
+  let is_not_found =
+    string.contains(lower, "command not found")
+    || string.contains(lower, "not found in path")
+    || string.contains(lower, "no such file or directory")
+    || string.contains(lower, "executable file not found")
+  case is_not_found {
+    True ->
+      errors.ApiError(
+        operation: operation,
+        details: "git-bug not found in PATH. Install with: go install github.com/MichaelMure/git-bug@latest",
+        status_code: None,
+      )
+    False ->
+      errors.ApiError(operation: operation, details: msg, status_code: None)
   }
 }

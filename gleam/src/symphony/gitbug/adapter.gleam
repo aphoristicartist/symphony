@@ -41,11 +41,19 @@ fn terminal_states(cfg: config.TrackerConfig) -> List(String) {
   }
 }
 
+fn command_timeout_ms(cfg: config.TrackerConfig) -> Int {
+  case cfg {
+    config.GitBugConfig(command_timeout_ms: t, ..) -> t
+    _ -> 30_000
+  }
+}
+
 fn fetch_candidate_issues(
   cfg: config.TrackerConfig,
 ) -> Result(List(types.Issue), errors.TrackerError) {
   let states = active_states(cfg)
-  use issues <- result.try(client.list_issues(repo_dir(cfg)))
+  let timeout = command_timeout_ms(cfg)
+  use issues <- result.try(client.list_issues_timeout(repo_dir(cfg), timeout))
   issues
   |> list.filter(fn(i) {
     validation.is_active_state_list(client.status_to_state(i.status), states)
@@ -59,8 +67,9 @@ fn fetch_issue_states_by_ids(
   issue_ids: List(String),
 ) -> Result(List(types.Issue), errors.TrackerError) {
   let dir = repo_dir(cfg)
+  let timeout = command_timeout_ms(cfg)
   list.try_map(issue_ids, fn(id) {
-    use issue <- result.try(client.get_issue(dir, id))
+    use issue <- result.try(client.get_issue_timeout(dir, id, timeout))
     Ok(normalizer.normalize_issue(issue))
   })
 }

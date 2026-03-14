@@ -42,11 +42,19 @@ fn terminal_states(cfg: config.TrackerConfig) -> List(String) {
   }
 }
 
+fn command_timeout_ms(cfg: config.TrackerConfig) -> Int {
+  case cfg {
+    config.TaskwarriorConfig(command_timeout_ms: t, ..) -> t
+    _ -> 30_000
+  }
+}
+
 fn fetch_candidate_issues(
   cfg: config.TrackerConfig,
 ) -> Result(List(types.Issue), errors.TrackerError) {
   let states = active_states(cfg)
-  use tasks <- result.try(client.list_tasks(project(cfg)))
+  let timeout = command_timeout_ms(cfg)
+  use tasks <- result.try(client.list_tasks_timeout(project(cfg), timeout))
   tasks
   |> list.filter(fn(t) {
     validation.is_active_state_list(client.status_to_state(t.status), states)
@@ -59,9 +67,9 @@ fn fetch_issue_states_by_ids(
   cfg: config.TrackerConfig,
   issue_ids: List(String),
 ) -> Result(List(types.Issue), errors.TrackerError) {
-  let _ = cfg
+  let timeout = command_timeout_ms(cfg)
   list.try_map(issue_ids, fn(uuid) {
-    use task <- result.try(client.get_task(uuid))
+    use task <- result.try(client.get_task_timeout(uuid, timeout))
     Ok(normalizer.normalize_task(task))
   })
 }

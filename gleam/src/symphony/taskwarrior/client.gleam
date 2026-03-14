@@ -13,6 +13,14 @@ import symphony/taskwarrior/types as tw_types
 pub fn list_tasks(
   project: Option(String),
 ) -> Result(List(tw_types.TaskwarriorTask), errors.TrackerError) {
+  list_tasks_timeout(project, 30_000)
+}
+
+/// Export all tasks with a configurable timeout (ms).
+pub fn list_tasks_timeout(
+  project: Option(String),
+  timeout_ms: Int,
+) -> Result(List(tw_types.TaskwarriorTask), errors.TrackerError) {
   let filter = case project {
     Some(p) -> "project:" <> p
     None -> ""
@@ -21,7 +29,7 @@ pub fn list_tasks(
     "" -> ["export"]
     f -> [f, "export"]
   }
-  case run_task(args) {
+  case run_task_timeout(args, timeout_ms) {
     Ok(output) -> decode_tasks(output)
     Error(msg) ->
       Error(errors.ApiError(
@@ -36,7 +44,15 @@ pub fn list_tasks(
 pub fn get_task(
   uuid: String,
 ) -> Result(tw_types.TaskwarriorTask, errors.TrackerError) {
-  case run_task([uuid, "export"]) {
+  get_task_timeout(uuid, 30_000)
+}
+
+/// Export a single task by UUID with a configurable timeout (ms).
+pub fn get_task_timeout(
+  uuid: String,
+  timeout_ms: Int,
+) -> Result(tw_types.TaskwarriorTask, errors.TrackerError) {
+  case run_task_timeout([uuid, "export"], timeout_ms) {
     Ok(output) -> {
       use tasks <- result.try(decode_tasks(output))
       case tasks {
@@ -92,16 +108,63 @@ pub fn annotate_task(
 }
 
 // ---------------------------------------------------------------------------
-// Shell runner
+// Shell runner with retry
 // ---------------------------------------------------------------------------
 
-/// Run `task <args>` and return stdout, or an error string.
-fn run_task(args: List(String)) -> Result(String, String) {
-  do_run_command("task", args)
+/// Run `task <args>` with a configurable timeout (ms).
+/// Retries up to 3 times on transient errors (lock contention, timeout).
+pub fn run_task_timeout(
+  args: List(String),
+  timeout_ms: Int,
+) -> Result(String, String) {
+  run_with_retry(args, timeout_ms, 3)
 }
 
-@external(erlang, "symphony_shell_ffi", "run_command")
-fn do_run_command(cmd: String, args: List(String)) -> Result(String, String)
+/// Run `task <args>` with the default 30s timeout (3 retries).
+fn run_task(args: List(String)) -> Result(String, String) {
+  run_with_retry(args, 30_000, 3)
+}
+
+/// Attempt to run `task <args>` up to `attempts` times.
+/// Retries on transient errors; returns immediately on permanent errors.
+fn run_with_retry(
+  args: List(String),
+  timeout_ms: Int,
+  attempts: Int,
+) -> Result(String, String) {
+  case do_run_command_timeout("task", args, ".", timeout_ms) {
+    Ok(output) -> Ok(output)
+    Error(msg) -> {
+      let transient = is_transient_error(msg)
+      case transient && attempts > 1 {
+        True -> {
+          sleep_ms(500)
+          run_with_retry(args, timeout_ms, attempts - 1)
+        }
+        False -> Error(msg)
+      }
+    }
+  }
+}
+
+/// Detect transient Taskwarrior errors that are safe to retry.
+fn is_transient_error(msg: String) -> Bool {
+  let lower = string.lowercase(msg)
+  string.contains(lower, "could not get exclusive lock")
+  || string.contains(lower, "lock")
+  || string.contains(lower, "command timed out")
+}
+
+@external(erlang, "symphony_shell_ffi", "run_command_in_dir_timeout")
+fn do_run_command_timeout(
+  cmd: String,
+  args: List(String),
+  dir: String,
+  timeout_ms: Int,
+) -> Result(String, String)
+
+@external(erlang, "timer", "sleep")
+fn sleep_ms(ms: Int) -> Nil
 
 // ---------------------------------------------------------------------------
 // JSON decoding

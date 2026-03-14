@@ -20,6 +20,8 @@ fn linear_fields(config: Config) -> #(String, String) {
     config.LinearConfig(api_key: k, project_slug: slug, ..) -> #(k, slug)
     config.PlaneConfig(api_key: k, ..) -> #(k, "")
     config.LocalConfig(..) -> #("", "")
+    config.TaskwarriorConfig(..) -> #("", "")
+    config.GitBugConfig(..) -> #("", "")
   }
 }
 

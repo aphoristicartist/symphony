@@ -103,6 +103,8 @@ fn linear_api_key(config: Config) -> String {
     config.LinearConfig(api_key: k, ..) -> k
     config.PlaneConfig(api_key: k, ..) -> k
     config.LocalConfig(..) -> ""
+    config.TaskwarriorConfig(..) -> ""
+    config.GitBugConfig(..) -> ""
   }
 }
 

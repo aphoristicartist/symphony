@@ -13,6 +13,9 @@ import symphony/codex/app_server
 import symphony/codex/dynamic_tool
 import symphony/config
 import symphony/errors
+import symphony/gitbug/client as gitbug_client
+import symphony/gitbug/normalizer as gitbug_normalizer
+import symphony/gitbug/types as gitbug_types
 import symphony/local/client as local_client
 import symphony/local/normalizer as local_normalizer
 import symphony/local/types as local_types
@@ -20,6 +23,9 @@ import symphony/persistence
 import symphony/plane/client as plane_client
 import symphony/plane/normalizer
 import symphony/plane/types as plane_types
+import symphony/taskwarrior/client as tw_client
+import symphony/taskwarrior/normalizer as tw_normalizer
+import symphony/taskwarrior/types as tw_types
 import symphony/template
 import symphony/types
 import symphony/validation
@@ -1955,4 +1961,135 @@ pub fn local_issue_state_terminal_test() {
 
   validation.is_active_state_list("Cancelled", ["Todo", "In Progress"])
   |> should.equal(False)
+}
+
+// ============================================================================
+// Taskwarrior adapter tests
+// ============================================================================
+
+/// TaskwarriorConfig is built with the correct active/terminal state lists.
+pub fn taskwarrior_config_fields_test() {
+  let cfg =
+    config.TaskwarriorConfig(
+      project: option.Some("myproject"),
+      active_states: ["pending"],
+      terminal_states: ["completed", "deleted"],
+    )
+  case cfg {
+    config.TaskwarriorConfig(
+      project: option.Some("myproject"),
+      active_states: active,
+      terminal_states: terminal,
+    ) -> {
+      active |> should.equal(["pending"])
+      terminal |> should.equal(["completed", "deleted"])
+    }
+    _ -> should.fail()
+  }
+}
+
+/// Taskwarrior status→state passthrough: pending stays pending.
+pub fn taskwarrior_status_to_state_pending_test() {
+  tw_client.status_to_state("pending")
+  |> should.equal("pending")
+}
+
+/// Taskwarrior status→state passthrough: completed stays completed.
+pub fn taskwarrior_status_to_state_completed_test() {
+  tw_client.status_to_state("completed")
+  |> should.equal("completed")
+}
+
+/// Priority mapping: H → 1, M → 2, L → 3, None → None.
+pub fn taskwarrior_priority_mapping_test() {
+  tw_client.priority_to_int(option.Some("H")) |> should.equal(option.Some(1))
+  tw_client.priority_to_int(option.Some("M")) |> should.equal(option.Some(2))
+  tw_client.priority_to_int(option.Some("L")) |> should.equal(option.Some(3))
+  tw_client.priority_to_int(option.None) |> should.equal(option.None)
+}
+
+/// normalize_task sets identifier to TW-<id> and preserves uuid and title.
+pub fn taskwarrior_normalize_task_test() {
+  let task =
+    tw_types.TaskwarriorTask(
+      uuid: "abc-123",
+      id: 42,
+      description: "Fix the bug",
+      status: "pending",
+      project: option.Some("backend"),
+      priority: option.Some("H"),
+      tags: ["urgent"],
+      annotations: [],
+      entry: option.None,
+      modified: option.None,
+    )
+  let issue = tw_normalizer.normalize_task(task)
+  issue.id |> should.equal("abc-123")
+  issue.identifier |> should.equal("TW-42")
+  issue.title |> should.equal("Fix the bug")
+  issue.state |> should.equal("pending")
+  issue.priority |> should.equal(option.Some(1))
+  issue.labels |> should.equal(["urgent"])
+}
+
+// ============================================================================
+// git-bug adapter tests
+// ============================================================================
+
+/// GitBugConfig stores repo_dir and state lists correctly.
+pub fn gitbug_config_fields_test() {
+  let cfg =
+    config.GitBugConfig(
+      repo_dir: "/home/user/myrepo",
+      active_states: ["open"],
+      terminal_states: ["closed"],
+    )
+  case cfg {
+    config.GitBugConfig(repo_dir: dir, active_states: active, terminal_states: terminal) -> {
+      dir |> should.equal("/home/user/myrepo")
+      active |> should.equal(["open"])
+      terminal |> should.equal(["closed"])
+    }
+    _ -> should.fail()
+  }
+}
+
+/// git-bug status→state: open stays open, closed stays closed.
+pub fn gitbug_status_to_state_test() {
+  gitbug_client.status_to_state("open") |> should.equal("open")
+  gitbug_client.status_to_state("closed") |> should.equal("closed")
+  gitbug_client.status_to_state("Open") |> should.equal("open")
+}
+
+/// state_to_git_bug_status returns close for terminal states, open otherwise.
+pub fn gitbug_state_to_status_test() {
+  let terminals = ["closed", "Done"]
+  gitbug_client.state_to_git_bug_status("closed", terminals)
+  |> should.equal("close")
+  gitbug_client.state_to_git_bug_status("open", terminals)
+  |> should.equal("open")
+  gitbug_client.state_to_git_bug_status("Done", terminals)
+  |> should.equal("close")
+}
+
+/// normalize_issue maps git-bug fields to Symphony Issue correctly.
+pub fn gitbug_normalize_issue_test() {
+  let gb_issue =
+    gitbug_types.GitBugIssue(
+      id: "deadbeef1234",
+      human_id: "abc1234",
+      title: "Memory leak in allocator",
+      status: "open",
+      labels: ["bug", "performance"],
+      author: option.Some("alice"),
+      created_at: option.Some("2026-01-01T00:00:00Z"),
+      comments: 3,
+    )
+  let issue = gitbug_normalizer.normalize_issue(gb_issue)
+  issue.id |> should.equal("deadbeef1234")
+  issue.identifier |> should.equal("abc1234")
+  issue.title |> should.equal("Memory leak in allocator")
+  issue.state |> should.equal("open")
+  issue.labels |> should.equal(["bug", "performance"])
+  issue.description |> should.equal(option.Some("Author: alice"))
 }

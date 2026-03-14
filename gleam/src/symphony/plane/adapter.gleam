@@ -135,7 +135,10 @@ fn extract_plane_config(
       active_states: active_states,
       ..,
     ) -> Ok(#(api_key, endpoint, workspace_slug, project_id, active_states))
-    config.LinearConfig(..) | config.LocalConfig(..) ->
+    config.LinearConfig(..)
+    | config.LocalConfig(..)
+    | config.TaskwarriorConfig(..)
+    | config.GitBugConfig(..) ->
       Error(errors.ApiError(
         operation: "plane_config",
         details: "Plane adapter requires PlaneConfig tracker configuration",

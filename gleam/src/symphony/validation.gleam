@@ -24,6 +24,8 @@ fn tracker_active_states(tracker: config.TrackerConfig) -> List(String) {
     config.LinearConfig(active_states: s, ..) -> s
     config.PlaneConfig(active_states: s, ..) -> s
     config.LocalConfig(active_states: s, ..) -> s
+    config.TaskwarriorConfig(active_states: s, ..) -> s
+    config.GitBugConfig(active_states: s, ..) -> s
   }
 }
 
@@ -33,6 +35,8 @@ fn tracker_terminal_states(tracker: config.TrackerConfig) -> List(String) {
     config.LinearConfig(terminal_states: s, ..) -> s
     config.PlaneConfig(terminal_states: s, ..) -> s
     config.LocalConfig(terminal_states: s, ..) -> s
+    config.TaskwarriorConfig(terminal_states: s, ..) -> s
+    config.GitBugConfig(terminal_states: s, ..) -> s
   }
 }
 
@@ -43,6 +47,8 @@ pub fn tracker_api_key(tracker: config.TrackerConfig) -> String {
     config.LinearConfig(api_key: k, ..) -> k
     config.PlaneConfig(api_key: k, ..) -> k
     config.LocalConfig(..) -> ""
+    config.TaskwarriorConfig(..) -> ""
+    config.GitBugConfig(..) -> ""
   }
 }
 
@@ -213,6 +219,9 @@ fn validate_tracker(
     }
     config.LocalConfig(issues_dir: dir, ..) ->
       require_non_empty("tracker.issues_dir", dir)
+    config.TaskwarriorConfig(..) -> Ok(Nil)
+    config.GitBugConfig(repo_dir: dir, ..) ->
+      require_non_empty("tracker.repo_dir", dir)
   }
 }
 

@@ -9,7 +9,7 @@ import gleam/string
 import simplifile
 import symphony/errors
 
-/// Configuration for the issue tracker (Linear, Plane, or Local).
+/// Configuration for the issue tracker (Linear, Plane, Local, Taskwarrior, or git-bug).
 /// Variants enforce which fields are present for each backend.
 pub type TrackerConfig {
   LinearConfig(
@@ -28,6 +28,16 @@ pub type TrackerConfig {
   )
   LocalConfig(
     issues_dir: String,
+    active_states: List(String),
+    terminal_states: List(String),
+  )
+  TaskwarriorConfig(
+    project: option.Option(String),
+    active_states: List(String),
+    terminal_states: List(String),
+  )
+  GitBugConfig(
+    repo_dir: String,
     active_states: List(String),
     terminal_states: List(String),
   )
@@ -317,6 +327,26 @@ fn build_tracker_config(
         get_string_with_default(tracker_dict, "issues_dir", "./issues")
       Ok(LocalConfig(
         issues_dir: issues_dir,
+        active_states: active_states,
+        terminal_states: terminal_states,
+      ))
+    }
+    "taskwarrior" -> {
+      let project_opt = case get_string_with_default(tracker_dict, "project", "") {
+        "" -> option.None
+        p -> option.Some(p)
+      }
+      Ok(TaskwarriorConfig(
+        project: project_opt,
+        active_states: active_states,
+        terminal_states: terminal_states,
+      ))
+    }
+    "git-bug" | "gitbug" -> {
+      let repo_dir =
+        get_string_with_default(tracker_dict, "repo_dir", ".")
+      Ok(GitBugConfig(
+        repo_dir: repo_dir,
         active_states: active_states,
         terminal_states: terminal_states,
       ))

@@ -178,8 +178,10 @@ fn execute_plane_api(
       // Get the tracker endpoint, defaulting if not set
       let endpoint = case config.tracker {
         config.PlaneConfig(endpoint: ep, ..) -> ep
-        config.LinearConfig(..) | config.LocalConfig(..) ->
-          "https://api.plane.so"
+        config.LinearConfig(..)
+        | config.LocalConfig(..)
+        | config.TaskwarriorConfig(..)
+        | config.GitBugConfig(..) -> "https://api.plane.so"
       }
 
       // Build the full URL by parsing the endpoint
@@ -238,6 +240,8 @@ fn tracker_api_key(config: Config) -> String {
     config.LinearConfig(api_key: k, ..) -> k
     config.PlaneConfig(api_key: k, ..) -> k
     config.LocalConfig(..) -> ""
+    config.TaskwarriorConfig(..) -> ""
+    config.GitBugConfig(..) -> ""
   }
 }
 
